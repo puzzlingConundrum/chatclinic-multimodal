@@ -20,3 +20,6 @@ dependencies:
   - pip:
       - transformers==4.57.6
       - vllm==0.18.1
+      - torchxrayvision>=1.4,<2.0
+      - scikit-image>=0.23,<1.0
+      - pydicom>=2.4,<4.0

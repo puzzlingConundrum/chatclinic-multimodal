@@ -1,0 +1,69 @@
+{
+  "name": "cxr_report_labeling_tool",
+  "entrypoint": "plugins.cxr_report_labeling_tool.logic:execute",
+  "description": "Classify chest radiology report text into CheXbert/CheXpert-compatible observation labels.",
+  "task": "cxr-report-labeling",
+  "modality": "clinical-text",
+  "approval_required": false,
+  "source": "plugin",
+  "routing": {
+    "trigger_keywords": [
+      "cxrreport",
+      "cxr_report",
+      "reportlabels",
+      "report_labels",
+      "chexbert",
+      "chexpert"
+    ],
+    "result_slot": "cxr_report_labeling_result"
+  },
+  "runtime": {
+    "host_compatible": [
+      "cpu",
+      "gpu"
+    ],
+    "supported_accelerators": [
+      "cpu"
+    ],
+    "preferred_accelerator": "cpu",
+    "requires_gpu": false,
+    "allow_cpu_fallback": true,
+    "estimated_runtime_sec": 1,
+    "notes": "The default backend is a lightweight deterministic CheXbert/CheXpert-compatible rule labeler. It does not require a model checkpoint."
+  },
+  "direct_chat": {
+    "response_kind": "text_chat",
+    "result_kind": "cxr_report_labeling_result",
+    "requested_view": "cxr_report_labels",
+    "studio": {
+      "renderer": "cxr_report_labels"
+    },
+    "source_types": [
+      "text"
+    ]
+  },
+  "source_types": [
+    "text"
+  ],
+  "help": {
+    "summary": "Labels an active chest X-ray report text source with CheXbert/CheXpert-compatible observations.",
+    "options": [
+      {
+        "name": "backend",
+        "type": "string",
+        "default": "rules",
+        "description": "Currently supports rules. The output follows the CheXpert label convention."
+      }
+    ],
+    "examples": [
+      "@cxrreport help",
+      "@cxrreport",
+      "@chexbert"
+    ],
+    "notes": [
+      "Use on chest radiology reports or report impressions, not arbitrary clinical notes.",
+      "Labels are report-text-derived observations, not new image findings.",
+      "Label convention: positive=1, negative=0, uncertain=-1, blank=null."
+    ]
+  }
+}

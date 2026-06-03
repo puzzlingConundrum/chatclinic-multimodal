@@ -31,6 +31,128 @@ from plugins.summary_stats_review_tool.logic import analyze_summary_stats
 from plugins.text_review_tool.logic import analyze_text_source
 
 
+def _attach_cxr_classification_result(
+    result: ImageSourceResponse | DicomSourceResponse,
+    *,
+    source_path: str | None,
+    payload_key: str,
+) -> ImageSourceResponse | DicomSourceResponse:
+    if not source_path:
+        return result
+
+    warnings = list(result.warnings or [])
+    try:
+        classification_payload = run_tool(
+            "cxr_classification_tool",
+            {
+                payload_key: source_path,
+                "file_name": result.file_name,
+            },
+        )
+    except Exception as exc:
+        classification_result = {
+            "available": False,
+            "status": "workflow_error",
+            "tool": "cxr_classification_tool",
+            "source_path": source_path,
+            "probabilities": [],
+            "top_predictions": [],
+            "positive_findings": [],
+            "warnings": [f"CXR classification workflow failed: {exc}"],
+            "provenance": {"clinical_use": "research_screening_support_only"},
+        }
+        warnings.extend(classification_result["warnings"])
+    else:
+        raw_result = classification_payload.get("result")
+        classification_result = raw_result if isinstance(raw_result, dict) else classification_payload
+        for warning in classification_payload.get("warnings", []):
+            warning_text = str(warning).strip()
+            if warning_text and warning_text not in warnings:
+                warnings.append(warning_text)
+
+    artifacts = dict(result.artifacts or {})
+    artifacts["cxr_classification"] = classification_result
+
+    studio_cards = list(result.studio_cards or [])
+    if not any(str(card.get("id")) == "cxr_classification" for card in studio_cards if isinstance(card, dict)):
+        studio_cards.append(
+            {
+                "id": "cxr_classification",
+                "title": "CXR Classification",
+                "subtitle": "TorchXRayVision pathology probabilities",
+            }
+        )
+
+    used_tools = list(dict.fromkeys([*(result.used_tools or []), "cxr_classification_tool"]))
+    return result.model_copy(
+        update={
+            "artifacts": artifacts,
+            "studio_cards": studio_cards,
+            "warnings": warnings,
+            "used_tools": used_tools,
+        }
+    )
+
+
+def _attach_cxr_report_labeling_result(
+    result: TextSourceResponse,
+    *,
+    source_path: str | None,
+) -> TextSourceResponse:
+    if not source_path:
+        return result
+
+    try:
+        labeling_payload = run_tool(
+            "cxr_report_labeling_tool",
+            {
+                "text_path": source_path,
+                "file_name": result.file_name,
+            },
+        )
+    except Exception:
+        return result
+
+    raw_result = labeling_payload.get("result")
+    labeling_result = raw_result if isinstance(raw_result, dict) else labeling_payload
+    should_attach = bool(labeling_result.get("likely_cxr_report")) or any(
+        row.get("value") is not None
+        for row in labeling_result.get("labels", [])
+        if isinstance(row, dict)
+    )
+    if not should_attach:
+        return result
+
+    warnings = list(result.warnings or [])
+    for warning in labeling_payload.get("warnings", []):
+        warning_text = str(warning).strip()
+        if warning_text and warning_text not in warnings:
+            warnings.append(warning_text)
+
+    artifacts = dict(result.artifacts or {})
+    artifacts["cxr_report_labels"] = labeling_result
+
+    studio_cards = list(result.studio_cards or [])
+    if not any(str(card.get("id")) == "cxr_report_labels" for card in studio_cards if isinstance(card, dict)):
+        studio_cards.append(
+            {
+                "id": "cxr_report_labels",
+                "title": "CXR Report Labels",
+                "subtitle": "CheXbert/CheXpert-compatible observations",
+            }
+        )
+
+    used_tools = list(dict.fromkeys([*(result.used_tools or []), "cxr_report_labeling_tool"]))
+    return result.model_copy(
+        update={
+            "artifacts": artifacts,
+            "studio_cards": studio_cards,
+            "warnings": warnings,
+            "used_tools": used_tools,
+        }
+    )
+
+
 def _vcf_workflow_context(
     path: str,
     annotation_scope: str,
@@ -105,6 +227,7 @@ def analyze_summary_stats_workflow(
 
 def analyze_text_workflow(path: str, original_name: str) -> TextSourceResponse:
     result = analyze_text_source(path, original_name)
+    result = _attach_cxr_report_labeling_result(result, source_path=result.source_text_path)
     result.analysis_id = str(uuid.uuid4())
     result.tool_registry = discover_tools()
     return result
@@ -119,6 +242,11 @@ def analyze_spreadsheet_workflow(path: str, original_name: str) -> SpreadsheetSo
 
 def analyze_dicom_workflow(path: str, original_name: str) -> DicomSourceResponse:
     result = analyze_dicom_source(path, original_name)
+    result = _attach_cxr_classification_result(
+        result,
+        source_path=result.source_dicom_path,
+        payload_key="dicom_path",
+    )
     result.analysis_id = str(uuid.uuid4())
     result.tool_registry = discover_tools()
     return result
@@ -133,6 +261,11 @@ def analyze_fhir_workflow(path: str, original_name: str) -> FhirSourceResponse:
 
 def analyze_image_workflow(path: str, original_name: str) -> ImageSourceResponse:
     result = analyze_image_source(path, original_name)
+    result = _attach_cxr_classification_result(
+        result,
+        source_path=result.source_image_path,
+        payload_key="image_path",
+    )
     result.analysis_id = str(uuid.uuid4())
     result.tool_registry = discover_tools()
     return result

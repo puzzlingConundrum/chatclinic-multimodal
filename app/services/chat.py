@@ -753,6 +753,7 @@ def _compact_summary_stats_context(payload: SummaryStatsChatRequest) -> dict[str
 
 def _compact_dicom_context(payload: DicomChatRequest) -> dict[str, object]:
     first_item = payload.analysis.metadata_items[0] if payload.analysis.metadata_items else {}
+    cxr_classification = payload.analysis.artifacts.get("cxr_classification") if payload.analysis.artifacts else None
     context = {
         "analysis_id": payload.analysis.analysis_id,
         "file_name": payload.analysis.file_name,
@@ -767,6 +768,7 @@ def _compact_dicom_context(payload: DicomChatRequest) -> dict[str, object]:
         "warnings": payload.analysis.warnings[:12],
         "draft_answer": payload.analysis.draft_answer,
         "used_tools": payload.analysis.used_tools,
+        "cxr_classification": cxr_classification,
     }
     if payload.studio_context:
         context["studio_context"] = _flatten_studio_context(payload.studio_context)
@@ -774,6 +776,7 @@ def _compact_dicom_context(payload: DicomChatRequest) -> dict[str, object]:
 
 
 def _compact_text_context(payload: TextChatRequest) -> dict[str, object]:
+    cxr_report_labels = payload.analysis.artifacts.get("cxr_report_labels") if payload.analysis.artifacts else None
     context = {
         "analysis_id": payload.analysis.analysis_id,
         "file_name": payload.analysis.file_name,
@@ -785,6 +788,7 @@ def _compact_text_context(payload: TextChatRequest) -> dict[str, object]:
         "preview_lines": payload.analysis.preview_lines[:12],
         "draft_answer": payload.analysis.draft_answer,
         "used_tools": payload.analysis.used_tools,
+        "cxr_report_labels": cxr_report_labels,
     }
     if payload.studio_context:
         context["studio_context"] = _flatten_studio_context(payload.studio_context)
@@ -813,6 +817,7 @@ def _compact_image_context(payload: ImageChatRequest) -> dict[str, object]:
     for key in ("Make", "Model", "DateTime", "Software", "ImageWidth", "ImageLength", "GPS"):
         if key in payload.analysis.exif_data:
             exif_summary[key] = payload.analysis.exif_data[key]
+    cxr_classification = payload.analysis.artifacts.get("cxr_classification") if payload.analysis.artifacts else None
     context: dict[str, object] = {
         "analysis_id": payload.analysis.analysis_id,
         "file_name": payload.analysis.file_name,
@@ -826,6 +831,7 @@ def _compact_image_context(payload: ImageChatRequest) -> dict[str, object]:
         "warnings": payload.analysis.warnings[:12],
         "draft_answer": payload.analysis.draft_answer,
         "used_tools": payload.analysis.used_tools,
+        "cxr_classification": cxr_classification,
     }
     if payload.studio_context:
         context["studio_context"] = _flatten_studio_context(payload.studio_context)
@@ -956,8 +962,9 @@ CHAT_OPENAI_CONFIG: dict[str, dict[str, Any]] = {
         "grounded_system_prompt": (
             "You are a DICOM imaging review copilot. "
             "The user explicitly requested grounded reasoning via a trigger such as $studio or $current analysis. "
-            "Answer only from the provided DICOM metadata, preview state, and current Studio card context. "
-            "Do not invent pixel findings or diagnoses that are not present in the provided context. "
+            "Answer only from the provided DICOM metadata, preview state, CXR classification artifacts, and current Studio card context. "
+            "Do not invent pixel findings or diagnoses that are not present in the provided context or model output. "
+            "When discussing CXR classification, identify it as model-derived probability output rather than a final diagnosis. "
             "Be explicit when the answer is based only on metadata or preview state."
         ),
         "general_system_prompt": (
@@ -972,7 +979,9 @@ CHAT_OPENAI_CONFIG: dict[str, dict[str, Any]] = {
         "grounded_system_prompt": (
             "You are a document and note-reading copilot. "
             "The user explicitly requested grounded reasoning via a trigger such as $studio or $current analysis. "
-            "Answer only from the provided text-note context and do not invent unseen document details. "
+            "Answer only from the provided text-note context, CXR report labeling artifacts, and current Studio card context. "
+            "If CXR report labels are present, describe them as report-text-derived CheXpert/CheXbert-compatible observations, not new image findings. "
+            "Do not invent unseen document details. "
             "Be concise and explicit when the preview is partial."
         ),
         "general_system_prompt": (
@@ -1002,7 +1011,9 @@ CHAT_OPENAI_CONFIG: dict[str, dict[str, Any]] = {
         "grounded_system_prompt": (
             "You are an image metadata analysis copilot. "
             "The user explicitly requested grounded reasoning via a trigger such as $studio or $current analysis. "
-            "Answer only from the provided image metadata (dimensions, format, EXIF, color mode) and do not invent information. "
+            "Answer only from the provided image metadata (dimensions, format, EXIF, color mode), CXR classification artifacts, and Studio card context. "
+            "Do not invent information or diagnoses that are not present in the model output. "
+            "When discussing CXR classification, identify it as model-derived probability output rather than a final diagnosis. "
             "When EXIF data includes GPS coordinates, camera make/model, or timestamps, mention them explicitly."
         ),
         "general_system_prompt": (

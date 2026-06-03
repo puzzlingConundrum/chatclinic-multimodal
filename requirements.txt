@@ -6,6 +6,9 @@ pysam>=0.23,<1.0
 openpyxl>=3.1,<4.0
 Pillow>=10.0,<12.0
 nibabel>=5.2,<6.0
+torchxrayvision>=1.4,<2.0
+scikit-image>=0.23,<1.0
+pydicom>=2.4,<4.0
 
 # Recommended runtime: Python 3.10
 # For NVIDIA CUDA 12.1, install the matching PyTorch wheels/index as needed.

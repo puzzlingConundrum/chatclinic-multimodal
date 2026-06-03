@@ -457,6 +457,263 @@ function NiftiReviewCard({
   );
 }
 
+function CxrClassificationCard({
+  result,
+  sourceName,
+  components,
+}: {
+  result: any;
+  sourceName: string;
+  components: StudioRendererBuilderArgs["components"];
+}) {
+  const { StudioMetricGrid, WarningListCard, StudioSimpleList } = components;
+  const probabilities = Array.isArray(result?.probabilities) ? result.probabilities : [];
+  const topPredictions = Array.isArray(result?.top_predictions) ? result.top_predictions : [];
+  const positiveFindings = Array.isArray(result?.positive_findings) ? result.positive_findings : [];
+  const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+  const modelPreset: Record<string, any> = result?.model_preset && typeof result.model_preset === "object" ? result.model_preset : {};
+  const availableWeights = Array.isArray(result?.available_model_weights) ? result.available_model_weights : [];
+  const top = topPredictions[0] ?? null;
+  const maxScore = probabilities.reduce((acc: number, item: any) => Math.max(acc, Number(item?.score ?? 0)), 0);
+
+  return (
+    <section className="notebookPanel studioCanvasPanel">
+      <div className="notebookHeader">
+        <h2>CXR Classification</h2>
+        <span className="pill">{sourceName || "chest x-ray"}</span>
+      </div>
+      <div className="studioCanvasBody">
+        <StudioMetricGrid
+          items={[
+            {
+              label: "Status",
+              value: result?.available ? "Available" : String(result?.status ?? "not run"),
+              tone: result?.available ? "good" : "warn",
+            },
+            { label: "Model", value: String(result?.model_weights ?? "n/a"), tone: "neutral" },
+            { label: "Architecture", value: String(modelPreset?.architecture ?? result?.provenance?.architecture ?? "n/a"), tone: "neutral" },
+            { label: "Device", value: String(result?.device ?? "n/a"), tone: String(result?.device ?? "").startsWith("cuda") ? "good" : "neutral" },
+            { label: "Input", value: result?.input_resolution != null ? `${result.input_resolution}px` : "n/a", tone: "neutral" },
+            { label: "Threshold", value: result?.threshold != null ? String(result.threshold) : "n/a", tone: "neutral" },
+            { label: "Top finding", value: top ? String(top.label ?? "n/a") : "n/a", tone: top ? "good" : "neutral" },
+            { label: "Top score", value: top?.score != null ? Number(top.score).toFixed(3) : "n/a", tone: top ? "good" : "neutral" },
+          ]}
+        />
+
+        {probabilities.length ? (
+          <div className="resultSectionSplit">
+            <article className="miniCard">
+              <h3>Top predictions</h3>
+              <StudioSimpleList
+                items={topPredictions.map((item: any) => ({
+                  label: String(item.label ?? "finding"),
+                  detail: `${Number(item.score ?? 0).toFixed(3)}${item.positive ? " | above threshold" : ""}`,
+                }))}
+                emptyLabel="No top predictions are available."
+              />
+            </article>
+            <article className="miniCard">
+              <h3>Positive flags</h3>
+              <StudioSimpleList
+                items={positiveFindings.slice(0, 8).map((item: any) => ({
+                  label: String(item.label ?? "finding"),
+                  detail: Number(item.score ?? 0).toFixed(3),
+                }))}
+                emptyLabel="No probability exceeded the configured threshold."
+              />
+            </article>
+          </div>
+        ) : (
+          <article className="miniCard">
+            <h3>Inference status</h3>
+            <p className="emptyState">
+              {warnings[0] || "CXR classification did not return probability outputs for this source."}
+            </p>
+          </article>
+        )}
+
+        {probabilities.length ? (
+          <article className="miniCard">
+            <h3>Pathology probabilities</h3>
+            <div className="distributionList">
+              {probabilities
+                .slice()
+                .sort((left: any, right: any) => Number(right.score ?? 0) - Number(left.score ?? 0))
+                .map((item: any, index: number) => {
+                  const score = Number(item.score ?? 0);
+                  const width = maxScore > 0 ? Math.max((score / maxScore) * 100, 3) : 0;
+                  return (
+                    <div key={`${String(item.raw_label ?? item.label ?? "finding")}-${index}`} className="distributionRow">
+                      <div className="distributionMeta">
+                        <span>{String(item.label ?? "finding")}</span>
+                        <strong>{score.toFixed(3)}</strong>
+                      </div>
+                      <div className="distributionTrack">
+                        <div className="distributionFill" style={{ width: `${width}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </article>
+        ) : null}
+
+        {availableWeights.length ? (
+          <article className="miniCard">
+            <h3>Available model presets</h3>
+            <StudioSimpleList
+              items={availableWeights.map((weight: any) => ({
+                label: String(weight),
+                detail: String(weight) === String(result?.model_weights) ? "selected" : "available",
+              }))}
+              emptyLabel="No model preset metadata is available."
+            />
+          </article>
+        ) : null}
+
+        <article className="miniCard">
+          <h3>Provenance</h3>
+          <div className="variantTableWrap summaryStatsTableWrap">
+            <table className="variantTable summaryStatsTable">
+              <tbody>
+                <tr><th>Library</th><td>{String(result?.provenance?.library ?? "torchxrayvision")}</td></tr>
+                <tr><th>Model family</th><td>{String(result?.model_family ?? "TorchXRayVision")}</td></tr>
+                <tr><th>Trained on</th><td>{String(modelPreset?.trained_on ?? result?.provenance?.trained_on ?? "n/a")}</td></tr>
+                <tr><th>Source kind</th><td>{String(result?.source_kind ?? "n/a")}</td></tr>
+                <tr><th>Cache</th><td>{String(result?.provenance?.cache_dir ?? "n/a")}</td></tr>
+                <tr><th>Use</th><td>{String(result?.provenance?.clinical_use ?? "research_screening_support_only")}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <WarningListCard warnings={warnings} emptyLabel="No CXR classification warnings." />
+      </div>
+    </section>
+  );
+}
+
+function CxrReportLabelsCard({
+  result,
+  sourceName,
+  components,
+}: {
+  result: any;
+  sourceName: string;
+  components: StudioRendererBuilderArgs["components"];
+}) {
+  const { StudioMetricGrid, StudioSimpleList, WarningListCard } = components;
+  const labels = Array.isArray(result?.labels) ? result.labels : [];
+  const positiveLabels = Array.isArray(result?.positive_labels) ? result.positive_labels : [];
+  const negativeLabels = Array.isArray(result?.negative_labels) ? result.negative_labels : [];
+  const uncertainLabels = Array.isArray(result?.uncertain_labels) ? result.uncertain_labels : [];
+  const blankLabels = Array.isArray(result?.blank_labels) ? result.blank_labels : [];
+  const warnings = Array.isArray(result?.warnings) ? result.warnings : [];
+  const evidenceRows = labels
+    .flatMap((label: any) =>
+      Array.isArray(label?.evidence)
+        ? label.evidence.map((evidence: any) => ({
+            label: String(label.label ?? "observation"),
+            polarity: String(evidence.polarity ?? label.label_class ?? "n/a"),
+            sentence: String(evidence.sentence ?? ""),
+          }))
+        : [],
+    )
+    .slice(0, 10);
+
+  return (
+    <section className="notebookPanel studioCanvasPanel">
+      <div className="notebookHeader">
+        <h2>CXR Report Labels</h2>
+        <span className="pill">{sourceName || "report text"}</span>
+      </div>
+      <div className="studioCanvasBody">
+        <StudioMetricGrid
+          items={[
+            { label: "Status", value: String(result?.status ?? "n/a"), tone: result?.status === "ok" ? "good" : "warn" },
+            { label: "Backend", value: String(result?.backend ?? "rules"), tone: "neutral" },
+            { label: "Likely CXR", value: result?.likely_cxr_report ? "yes" : "no", tone: result?.likely_cxr_report ? "good" : "warn" },
+            { label: "Positive", value: String(positiveLabels.length), tone: positiveLabels.length ? "good" : "neutral" },
+            { label: "Negative", value: String(negativeLabels.length), tone: "neutral" },
+            { label: "Uncertain", value: String(uncertainLabels.length), tone: uncertainLabels.length ? "warn" : "neutral" },
+            { label: "Blank", value: String(blankLabels.length), tone: "neutral" },
+          ]}
+        />
+
+        <div className="resultSectionSplit">
+          <article className="miniCard">
+            <h3>Positive labels</h3>
+            <StudioSimpleList
+              items={positiveLabels.map((item: any) => ({
+                label: String(item.label ?? "observation"),
+                detail: "positive",
+              }))}
+              emptyLabel="No positive report labels."
+            />
+          </article>
+          <article className="miniCard">
+            <h3>Uncertain labels</h3>
+            <StudioSimpleList
+              items={uncertainLabels.map((item: any) => ({
+                label: String(item.label ?? "observation"),
+                detail: "uncertain",
+              }))}
+              emptyLabel="No uncertain report labels."
+            />
+          </article>
+        </div>
+
+        <article className="miniCard">
+          <h3>All observations</h3>
+          <div className="variantTableWrap summaryStatsTableWrap">
+            <table className="variantTable summaryStatsTable">
+              <thead>
+                <tr><th>Observation</th><th>Value</th><th>Evidence</th></tr>
+              </thead>
+              <tbody>
+                {labels.map((item: any) => (
+                  <tr key={String(item.label)}>
+                    <td>{String(item.label ?? "observation")}</td>
+                    <td>{String(item.label_class ?? "blank")}</td>
+                    <td>{Array.isArray(item.evidence) ? String(item.evidence.length) : "0"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article className="miniCard">
+          <h3>Evidence snippets</h3>
+          <StudioSimpleList
+            items={evidenceRows.map((item: any) => ({
+              label: `${item.label} | ${item.polarity}`,
+              detail: item.sentence,
+            }))}
+            emptyLabel="No matched evidence snippets."
+          />
+        </article>
+
+        <article className="miniCard">
+          <h3>Provenance</h3>
+          <div className="variantTableWrap summaryStatsTableWrap">
+            <table className="variantTable summaryStatsTable">
+              <tbody>
+                <tr><th>Model family</th><td>{String(result?.model_family ?? "CheXbert/CheXpert-compatible report labeler")}</td></tr>
+                <tr><th>Label set</th><td>{String(result?.provenance?.label_set ?? "CheXpert 14 observations")}</td></tr>
+                <tr><th>Implementation</th><td>{String(result?.provenance?.implementation ?? "deterministic local rule backend")}</td></tr>
+                <tr><th>Use</th><td>{String(result?.provenance?.clinical_use ?? "report_text_screening_support_only")}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <WarningListCard warnings={warnings} emptyLabel="No CXR report labeling warnings." />
+      </div>
+    </section>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // FHIR helpers
 // ---------------------------------------------------------------------------
@@ -787,6 +1044,7 @@ export function buildCustomStudioRendererRegistry({
   attachedFile,
   dicomAnalysis,
   spreadsheetAnalysis,
+  textAnalysis,
   imageAnalysis,
   niftiAnalysis,
   fhirAnalysis,
@@ -819,6 +1077,20 @@ export function buildCustomStudioRendererRegistry({
     WarningListCard,
   } = components;
   const { summarizeLabel } = helpers;
+  const cxrClassificationResult =
+    activeSource?.source_type === "dicom"
+      ? dicomAnalysis?.artifacts?.cxr_classification ?? imageAnalysis?.artifacts?.cxr_classification ?? null
+      : activeSource?.source_type === "image"
+        ? imageAnalysis?.artifacts?.cxr_classification ?? dicomAnalysis?.artifacts?.cxr_classification ?? null
+        : imageAnalysis?.artifacts?.cxr_classification ?? dicomAnalysis?.artifacts?.cxr_classification ?? null;
+  const cxrClassificationSourceName =
+    activeSource?.source_type === "dicom"
+      ? dicomAnalysis?.file_name ?? activeSource?.file_name ?? ""
+      : activeSource?.source_type === "image"
+        ? imageAnalysis?.file_name ?? activeSource?.file_name ?? ""
+        : imageAnalysis?.file_name ?? dicomAnalysis?.file_name ?? activeSource?.file_name ?? "";
+  const cxrReportLabelsResult = textAnalysis?.artifacts?.cxr_report_labels ?? null;
+  const cxrReportLabelsSourceName = textAnalysis?.file_name ?? (activeSource?.source_type === "text" ? activeSource?.file_name : "") ?? "";
 
   return {
     dicom_review: () =>
@@ -832,6 +1104,22 @@ export function buildCustomStudioRendererRegistry({
     nifti_review: () =>
       niftiAnalysis ? (
         <NiftiReviewCard analysis={niftiAnalysis} apiBase={apiBase} components={components} />
+      ) : null,
+    cxr_classification: () =>
+      cxrClassificationResult ? (
+        <CxrClassificationCard
+          result={cxrClassificationResult}
+          sourceName={cxrClassificationSourceName}
+          components={components}
+        />
+      ) : null,
+    cxr_report_labels: () =>
+      cxrReportLabelsResult ? (
+        <CxrReportLabelsCard
+          result={cxrReportLabelsResult}
+          sourceName={cxrReportLabelsSourceName}
+          components={components}
+        />
       ) : null,
     fhir_browser: () =>
       fhirAnalysis ? (

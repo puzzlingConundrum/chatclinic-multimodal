@@ -14,8 +14,10 @@ export type StudioRendererDispatch = {
 const STUDIO_RENDERER_METADATA: Record<string, { requestedViews?: string[]; resultKinds?: string[] }> = {
   rawqc: { requestedViews: ["rawqc"] },
   text: { requestedViews: ["text"] },
+  cxr_report_labels: { requestedViews: ["cxr_report_labels"], resultKinds: ["cxr_report_labeling_result"] },
   dicom_review: { requestedViews: ["dicom_review"], resultKinds: ["dicom_analysis"] },
   image_review: { requestedViews: ["image_review"], resultKinds: ["image_analysis"] },
+  cxr_classification: { requestedViews: ["cxr_classification"], resultKinds: ["cxr_classification_result"] },
   nifti_review: { requestedViews: ["nifti_review"], resultKinds: ["nifti_analysis"] },
   cohort_browser: { requestedViews: ["cohort_browser"] },
   sumstats: { requestedViews: ["sumstats"] },

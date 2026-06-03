@@ -382,6 +382,8 @@ class TextSourceResponse(BaseSourceResponse):
     word_count: int = 0
     line_count: int = 0
     preview_lines: list[str] = []
+    studio_cards: list[dict[str, Any]] = []
+    artifacts: dict[str, dict[str, Any]] = {}
     warnings: list[str] = []
 
 

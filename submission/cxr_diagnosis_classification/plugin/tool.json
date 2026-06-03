@@ -1,0 +1,85 @@
+{
+  "name": "cxr_classification_tool",
+  "entrypoint": "plugins.cxr_classification_tool.logic:execute",
+  "description": "Classify chest X-ray images with open-source TorchXRayVision pathology classifiers and return model-derived pathology probabilities.",
+  "task": "cxr-classification",
+  "modality": "medical-image",
+  "approval_required": false,
+  "source": "plugin",
+  "routing": {
+    "trigger_keywords": [
+      "cxr",
+      "cxr_classification",
+      "cxrdiagnosis",
+      "chestxray",
+      "cxrmodel",
+      "cxrcompare"
+    ],
+    "result_slot": "cxr_classification_result"
+  },
+  "runtime": {
+    "host_compatible": [
+      "cpu",
+      "gpu"
+    ],
+    "supported_accelerators": [
+      "cpu",
+      "cuda"
+    ],
+    "preferred_accelerator": "cuda",
+    "requires_gpu": false,
+    "allow_cpu_fallback": true,
+    "estimated_runtime_sec": 10,
+    "notes": "Single-image inference can run on CPU, but CUDA is preferred when available. Supports TorchXRayVision DenseNet121 224px presets and the ResNet50 512px all-data preset. Weights must be available in the configured cache directory or downloadable in the runtime environment."
+  },
+  "direct_chat": {
+    "response_kind": "image_chat",
+    "result_kind": "cxr_classification_result",
+    "requested_view": "cxr_classification",
+    "studio": {
+      "renderer": "cxr_classification"
+    },
+    "source_types": [
+      "image",
+      "dicom"
+    ]
+  },
+  "source_types": [
+    "image",
+    "dicom"
+  ],
+  "help": {
+    "summary": "Runs a selected TorchXRayVision chest X-ray pathology classifier on the active CXR image or DICOM source.",
+    "options": [
+      {
+        "name": "model_weights",
+        "type": "string",
+        "default": "densenet121-res224-all",
+        "description": "TorchXRayVision pretrained weight set. Supported: densenet121-res224-all, densenet121-res224-rsna, densenet121-res224-nih, densenet121-res224-pc, densenet121-res224-chex, densenet121-res224-mimic_nb, densenet121-res224-mimic_ch, resnet50-res512-all. Short aliases: all, rsna, nih, pc, chex, mimic_nb, mimic_ch, resnet."
+      },
+      {
+        "name": "threshold",
+        "type": "float",
+        "default": 0.5,
+        "description": "Probability cutoff used for positive flagging in the Studio result."
+      },
+      {
+        "name": "device",
+        "type": "string",
+        "default": "auto",
+        "description": "Use auto, cpu, cuda, or cuda:<index>."
+      }
+    ],
+    "examples": [
+      "@cxr help",
+      "@cxr",
+      "@cxr model_weights=densenet121-res224-chex threshold=0.4",
+      "@cxr model_weights=rsna",
+      "@cxr model_weights=resnet50-res512-all threshold=0.45"
+    ],
+    "notes": [
+      "Use only on chest radiographs, not CT/MRI/NIfTI or non-CXR images.",
+      "The output is model-derived screening support and is not a final clinical diagnosis."
+    ]
+  }
+}

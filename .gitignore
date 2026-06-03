@@ -30,3 +30,17 @@ uploads/
 references/
 third_party/
 data/
+checkpoints/
+
+# Course submission artifacts
+!references/
+!references/background_papers.md
+!submission/
+!submission/**/
+!submission/**/*.md
+!submission/**/*.json
+!submission/**/*.py
+!submission/**/*.txt
+!submission/**/*.png
+!submission/**/*.dcm
+!submission/**/*.zip

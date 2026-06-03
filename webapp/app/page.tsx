@@ -378,6 +378,8 @@ type TextSourceResponse = {
   line_count: number;
   preview_lines: string[];
   warnings: string[];
+  studio_cards?: Array<Record<string, any>>;
+  artifacts?: Record<string, any>;
   draft_answer: string;
   used_tools: string[];
   tool_registry: AnalysisResponse["tool_registry"];
@@ -600,6 +602,7 @@ type AnalysisQuestionTurn = {
 type StudioView =
   | "dicom_review"
   | "text"
+  | "cxr_report_labels"
   | "cohort_browser"
   | `sheet::${string}::cohort_browser`
   | "candidates"
@@ -625,6 +628,7 @@ type StudioView =
   | "igv"
   | "annotations"
   | "image_review"
+  | "cxr_classification"
   | "nifti_review"
   | "fhir_browser";
 
@@ -981,8 +985,8 @@ function StudioSimpleList({
 
   return (
     <div className="resultList">
-      {items.map((item) => (
-        <article key={`${item.label}-${item.detail}`} className="resultListItem resultListStatic">
+      {items.map((item, index) => (
+        <article key={`${item.label}-${item.detail}-${index}`} className="resultListItem resultListStatic">
           <strong>{item.label}</strong>
           <span>{item.detail}</span>
         </article>
@@ -1244,6 +1248,16 @@ function hasMeaningfulText(value: string) {
 }
 
 const groundingTokens = ["$studio", "$current analysis", "$current card", "$grounded"];
+const CXR_MODEL_PRESETS = [
+  { label: "All", value: "densenet121-res224-all", detail: "DenseNet 224" },
+  { label: "CheXpert", value: "densenet121-res224-chex", detail: "DenseNet 224" },
+  { label: "NIH", value: "densenet121-res224-nih", detail: "DenseNet 224" },
+  { label: "PadChest", value: "densenet121-res224-pc", detail: "DenseNet 224" },
+  { label: "RSNA", value: "densenet121-res224-rsna", detail: "Pneumonia" },
+  { label: "MIMIC-NIH", value: "densenet121-res224-mimic_nb", detail: "DenseNet 224" },
+  { label: "MIMIC-Chex", value: "densenet121-res224-mimic_ch", detail: "DenseNet 224" },
+  { label: "ResNet", value: "resnet50-res512-all", detail: "ResNet 512" },
+];
 
 function detectToolTriggers(text: string): string[] {
   return Array.from(new Set(Array.from(text.matchAll(/(^|\s)(@[A-Za-z0-9_-]+)/g)).map((match) => match[2])));
@@ -1408,6 +1422,12 @@ export default function Page() {
     }
     if (normalized.includes("qqman")) {
       return "@qqman";
+    }
+    if (normalized.includes("cxr_classification")) {
+      return "@cxr";
+    }
+    if (normalized.includes("cxr_report_labeling")) {
+      return "@cxrreport";
     }
     return `@${normalized.replace(/_execution_tool$|_tool$|_vcf_tool$/g, "").replace(/^gatk_/, "").replace(/_/g, "")}`;
   }
@@ -1960,6 +1980,27 @@ export default function Page() {
     return options;
   }
 
+  function isCxrReportAlias(alias: string) {
+    const normalized = alias.trim().toLowerCase();
+    return normalized === "cxrreport" ||
+      normalized === "cxr_report" ||
+      normalized === "reportlabels" ||
+      normalized === "report_labels" ||
+      normalized === "chexbert" ||
+      normalized === "chexpert";
+  }
+
+  function isCxrImageAlias(alias: string) {
+    const normalized = alias.trim().toLowerCase();
+    return normalized === "cxr" ||
+      normalized === "cxr_classification" ||
+      normalized === "cxrclassification" ||
+      normalized === "cxrdiagnosis" ||
+      normalized === "chestxray" ||
+      normalized === "cxrmodel" ||
+      normalized === "cxrcompare";
+  }
+
   function toolRunningStatus(alias: string, remainder: string) {
     const normalized = alias.trim().toLowerCase();
     const wantsPlinkScore =
@@ -1989,6 +2030,12 @@ export default function Page() {
     }
     if (normalized === "vcfreview" || normalized === "vcf_review") {
       return "Running VCF review...";
+    }
+    if (isCxrImageAlias(alias)) {
+      return "Running CXR classification...";
+    }
+    if (isCxrReportAlias(alias)) {
+      return "Running CXR report labeling...";
     }
     return "Running tool...";
   }
@@ -2023,6 +2070,12 @@ export default function Page() {
     if (normalized === "vcfreview" || normalized === "vcf_review") {
       return "VCF review ready";
     }
+    if (isCxrImageAlias(alias)) {
+      return "CXR classification ready";
+    }
+    if (isCxrReportAlias(alias)) {
+      return "CXR report labels ready";
+    }
     return "Tool ready";
   }
 
@@ -2056,6 +2109,12 @@ export default function Page() {
     if (normalized === "vcfreview" || normalized === "vcf_review") {
       return "VCF review failed";
     }
+    if (isCxrImageAlias(alias)) {
+      return "CXR classification failed";
+    }
+    if (isCxrReportAlias(alias)) {
+      return "CXR report labeling failed";
+    }
     return "Tool failed";
   }
 
@@ -2077,6 +2136,156 @@ export default function Page() {
     }
     const options = parseInlineOptions(remainder);
     setStatus(toolRunningStatus(alias, remainder));
+
+    if (isCxrReportAlias(alias) && preAnalysisSource.source_type === "text") {
+      const sourcePath = preAnalysisSource.source_path || textAnalysis?.source_text_path || "";
+      if (!sourcePath) {
+        addMessage({ role: "assistant", content: "Active text source path가 없습니다. CXR report 텍스트 파일을 다시 업로드해 주세요." });
+        return;
+      }
+      const response = await fetch(`${apiBase.replace(/\/$/, "")}/api/v1/tools/cxrreport/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload: {
+            text_path: sourcePath,
+            file_name: preAnalysisSource.file_name,
+            backend: options.backend,
+          },
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const toolResult = (await response.json()) as ToolRunResponse;
+      const reportResult =
+        (toolResult.result?.result as Record<string, any> | undefined) ??
+        (toolResult.result?.artifacts as Record<string, any> | undefined)?.cxr_report_labels ??
+        toolResult.result;
+      const reportWarnings = Array.isArray(reportResult?.warnings) ? reportResult.warnings.map(String) : [];
+      const ensureReportCard = (cards: Array<Record<string, any>> | undefined) => {
+        const currentCards = Array.isArray(cards) ? cards : [];
+        return currentCards.some((card) => String(card.id) === "cxr_report_labels")
+          ? currentCards
+          : [
+              ...currentCards,
+              {
+                id: "cxr_report_labels",
+                title: "CXR Report Labels",
+                subtitle: "CheXbert/CheXpert-compatible observations",
+              },
+            ];
+      };
+      setTextAnalysis((current) =>
+        current
+          ? {
+              ...current,
+              artifacts: { ...(current.artifacts ?? {}), cxr_report_labels: reportResult },
+              studio_cards: ensureReportCard(current.studio_cards),
+              warnings: [...new Set([...(current.warnings ?? []), ...reportWarnings])],
+              used_tools: [...new Set([...(current.used_tools ?? []), "cxr_report_labeling_tool"])],
+            }
+          : current,
+      );
+      activateStudioFromPayload({ requested_view: "cxr_report_labels", result_kind: "cxr_report_labeling_result" }, "cxr_report_labels", "text");
+      setStatus(toolReadyStatus(alias, remainder));
+      const positives = Array.isArray(reportResult?.positive_labels) ? reportResult.positive_labels.map((item: any) => String(item.label)).slice(0, 5) : [];
+      const uncertain = Array.isArray(reportResult?.uncertain_labels) ? reportResult.uncertain_labels.length : 0;
+      addMessage({
+        role: "assistant",
+        content:
+          `CXR report labeling was run for \`${preAnalysisSource.file_name}\`.\n\n` +
+          `- Backend: ${reportResult?.backend || "rules"}\n` +
+          `- Positive labels: ${positives.length ? positives.join(", ") : "none"}\n` +
+          `- Uncertain labels: ${uncertain}`,
+      });
+      return;
+    }
+
+    if (
+      isCxrImageAlias(alias) &&
+      (preAnalysisSource.source_type === "image" || preAnalysisSource.source_type === "dicom")
+    ) {
+      const sourcePath =
+        preAnalysisSource.source_path ||
+        (preAnalysisSource.source_type === "image" ? imageAnalysis?.source_image_path : dicomAnalysis?.source_dicom_path) ||
+        "";
+      if (!sourcePath) {
+        addMessage({ role: "assistant", content: "Active CXR source path가 없습니다. 이미지 또는 DICOM 파일을 다시 업로드해 주세요." });
+        return;
+      }
+      const response = await fetch(`${apiBase.replace(/\/$/, "")}/api/v1/tools/cxr/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload: {
+            [preAnalysisSource.source_type === "dicom" ? "dicom_path" : "image_path"]: sourcePath,
+            file_name: preAnalysisSource.file_name,
+            model_weights: options.model_weights,
+            threshold: options.threshold,
+            device: options.device,
+          },
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const toolResult = (await response.json()) as ToolRunResponse;
+      const cxrResult =
+        (toolResult.result?.result as Record<string, any> | undefined) ??
+        (toolResult.result?.artifacts as Record<string, any> | undefined)?.cxr_classification ??
+        toolResult.result;
+      const cxrWarnings = Array.isArray(cxrResult?.warnings) ? cxrResult.warnings.map(String) : [];
+      const ensureCxrCard = (cards: Array<Record<string, any>> | undefined) => {
+        const currentCards = Array.isArray(cards) ? cards : [];
+        return currentCards.some((card) => String(card.id) === "cxr_classification")
+          ? currentCards
+          : [
+              ...currentCards,
+              {
+                id: "cxr_classification",
+                title: "CXR Classification",
+                subtitle: "TorchXRayVision pathology probabilities",
+              },
+            ];
+      };
+      if (preAnalysisSource.source_type === "image") {
+        setImageAnalysis((current) =>
+          current
+            ? {
+                ...current,
+                artifacts: { ...(current.artifacts ?? {}), cxr_classification: cxrResult },
+                studio_cards: ensureCxrCard(current.studio_cards),
+                warnings: [...new Set([...(current.warnings ?? []), ...cxrWarnings])],
+                used_tools: [...new Set([...(current.used_tools ?? []), "cxr_classification_tool"])],
+              }
+            : current,
+        );
+      } else {
+        setDicomAnalysis((current) =>
+          current
+            ? {
+                ...current,
+                artifacts: { ...(current.artifacts ?? {}), cxr_classification: cxrResult },
+                studio_cards: ensureCxrCard(current.studio_cards),
+                warnings: [...new Set([...(current.warnings ?? []), ...cxrWarnings])],
+                used_tools: [...new Set([...(current.used_tools ?? []), "cxr_classification_tool"])],
+              }
+            : current,
+        );
+      }
+      activateStudioFromPayload({ requested_view: "cxr_classification", result_kind: "cxr_classification_result" }, "cxr_classification", preAnalysisSource.source_type);
+      setStatus(toolReadyStatus(alias, remainder));
+      const top = Array.isArray(cxrResult?.top_predictions) ? cxrResult.top_predictions[0] : null;
+      addMessage({
+        role: "assistant",
+        content:
+          cxrResult?.available
+            ? `CXR classification was run for \`${preAnalysisSource.file_name}\`.\n\n- Model: ${cxrResult.model_weights || "unknown"}\n- Top finding: ${top?.label || "n/a"}${top?.score != null ? ` (${Number(top.score).toFixed(3)})` : ""}\n- Positive flags: ${Array.isArray(cxrResult.positive_findings) ? cxrResult.positive_findings.length : 0}`
+            : `CXR classification did not complete for \`${preAnalysisSource.file_name}\`.\n\n- Status: ${cxrResult?.status || "unknown"}\n- Warning: ${cxrWarnings[0] || "No detailed warning was returned."}`,
+      });
+      return;
+    }
 
     if (alias === "vcfqc" || alias === "vcf_qc") {
       const vcfPath = analysis?.source_vcf_path ?? (preAnalysisSource.source_type === "vcf" ? preAnalysisSource.source_path : null);
@@ -3694,6 +3903,10 @@ export default function Page() {
               if (v.includes("cohort_browser") || v.startsWith("sheet::")) return "spreadsheet";
               if (v === "dicom_review" || v.startsWith("dicom")) return "dicom";
               if (v === "image_review") return "image";
+              if (v === "cxr_classification") {
+                return activeSource?.source_type === "dicom" ? "dicom" : "image";
+              }
+              if (v === "cxr_report_labels") return "text";
               if (v === "fhir_browser") return "fhir";
               if (v === "rawqc" || v === "samtools") return "raw_qc";
               if (v === "sumstats" || v === "qqman" || v === "prs_prep") return "summary_stats";
@@ -4380,6 +4593,15 @@ export default function Page() {
     // Text cards
     if (textAnalysis) {
       cards.push({ id: "text" as StudioView, title: "Text Review", subtitle: "Preview and note-length summary" });
+      if (textAnalysis.studio_cards?.length) {
+        textAnalysis.studio_cards.forEach((card) => {
+          cards.push({
+            id: String(card.id ?? "cxr_report_labels") as StudioView,
+            title: String(card.title ?? "CXR Report Labels"),
+            subtitle: String(card.subtitle ?? "CheXbert/CheXpert-compatible observations"),
+          });
+        });
+      }
     }
 
     // Image cards
@@ -4700,19 +4922,32 @@ export default function Page() {
     // --- DICOM source ---
     if (dicomAnalysis) {
       const dicomCard = dicomAnalysis.artifacts?.dicom_review ?? null;
+      const dicomCxrClassification = dicomAnalysis.artifacts?.cxr_classification ?? null;
       const metadata = Array.isArray(dicomAnalysis.metadata_items) ? dicomAnalysis.metadata_items[0] ?? null : null;
       const preview = metadata?.preview ?? dicomCard?.preview ?? null;
       if (!analysis) {
         // Only set current_card/current_summary if VCF didn't already
-        merged.current_card = dicomCard;
-        merged.current_summary = metadata
-          ? {
-              modality: metadata.modality ?? null,
-              patient_id: metadata.patient_id ?? null,
-              study_description: metadata.study_description ?? null,
-              series_description: metadata.series_description ?? null,
-            }
-          : null;
+        merged.current_card = activeStudioView === "cxr_classification" ? dicomCxrClassification ?? dicomCard : dicomCard;
+        merged.current_summary =
+          activeStudioView === "cxr_classification" && dicomCxrClassification
+            ? {
+                status: dicomCxrClassification.status,
+                model_weights: dicomCxrClassification.model_weights,
+                top_predictions: Array.isArray(dicomCxrClassification.top_predictions)
+                  ? dicomCxrClassification.top_predictions.slice(0, 5)
+                  : [],
+                positive_findings: Array.isArray(dicomCxrClassification.positive_findings)
+                  ? dicomCxrClassification.positive_findings.slice(0, 8)
+                  : [],
+              }
+            : metadata
+              ? {
+                  modality: metadata.modality ?? null,
+                  patient_id: metadata.patient_id ?? null,
+                  study_description: metadata.study_description ?? null,
+                  series_description: metadata.series_description ?? null,
+                }
+              : null;
         merged.current_preview = preview
           ? {
               columns: ["preview_state"],
@@ -4721,10 +4956,12 @@ export default function Page() {
           : null;
       }
       allWarnings.push(...(Array.isArray(dicomAnalysis.warnings) ? dicomAnalysis.warnings.slice(0, 12) : []));
+      allWarnings.push(...(Array.isArray(dicomCxrClassification?.warnings) ? dicomCxrClassification.warnings.slice(0, 12) : []));
       mergedExtra.dicom = {
         metadata_items: dicomAnalysis.metadata_items,
         series: dicomAnalysis.series,
         preview,
+        cxr_classification: dicomCxrClassification,
         current_card: dicomCard,
         current_summary: metadata
           ? {
@@ -4800,23 +5037,91 @@ export default function Page() {
       };
     }
 
-    // --- Image source ---
-    if (imageAnalysis) {
+    // --- Text source ---
+    if (textAnalysis) {
+      const textCxrReportLabels = textAnalysis.artifacts?.cxr_report_labels ?? null;
       if (!analysis && !dicomAnalysis && !spreadsheetAnalysis) {
-        merged.current_card = {
-          file_name: imageAnalysis.file_name,
-          format: imageAnalysis.format_name,
-          dimensions: `${imageAnalysis.width}×${imageAnalysis.height}`,
-        };
-        merged.current_summary = {
-          format_name: imageAnalysis.format_name,
-          color_mode: imageAnalysis.color_mode,
-          width: imageAnalysis.width,
-          height: imageAnalysis.height,
-          bit_depth: imageAnalysis.bit_depth,
+        merged.current_card =
+          activeStudioView === "cxr_report_labels" && textCxrReportLabels
+            ? textCxrReportLabels
+            : {
+                file_name: textAnalysis.file_name,
+                media_type: textAnalysis.media_type,
+                char_count: textAnalysis.char_count,
+                word_count: textAnalysis.word_count,
+                line_count: textAnalysis.line_count,
+              };
+        merged.current_summary =
+          activeStudioView === "cxr_report_labels" && textCxrReportLabels
+            ? {
+                status: textCxrReportLabels.status,
+                backend: textCxrReportLabels.backend,
+                likely_cxr_report: textCxrReportLabels.likely_cxr_report,
+                positive_labels: Array.isArray(textCxrReportLabels.positive_labels)
+                  ? textCxrReportLabels.positive_labels.slice(0, 8)
+                  : [],
+                uncertain_labels: Array.isArray(textCxrReportLabels.uncertain_labels)
+                  ? textCxrReportLabels.uncertain_labels.slice(0, 8)
+                  : [],
+              }
+            : {
+                media_type: textAnalysis.media_type,
+                char_count: textAnalysis.char_count,
+                word_count: textAnalysis.word_count,
+                line_count: textAnalysis.line_count,
+              };
+        merged.current_preview = {
+          columns: ["line"],
+          rows: textAnalysis.preview_lines.slice(0, 12).map((line) => ({ line })),
         };
       }
+      allWarnings.push(...(Array.isArray(textAnalysis.warnings) ? textAnalysis.warnings.slice(0, 12) : []));
+      allWarnings.push(...(Array.isArray(textCxrReportLabels?.warnings) ? textCxrReportLabels.warnings.slice(0, 12) : []));
+      mergedExtra.text = {
+        file_name: textAnalysis.file_name,
+        media_type: textAnalysis.media_type,
+        char_count: textAnalysis.char_count,
+        word_count: textAnalysis.word_count,
+        line_count: textAnalysis.line_count,
+        preview_lines: textAnalysis.preview_lines.slice(0, 12),
+        cxr_report_labels: textCxrReportLabels,
+      };
+    }
+
+    // --- Image source ---
+    if (imageAnalysis) {
+      const imageCxrClassification = imageAnalysis.artifacts?.cxr_classification ?? null;
+      if (!analysis && !dicomAnalysis && !spreadsheetAnalysis && !textAnalysis) {
+        merged.current_card =
+          activeStudioView === "cxr_classification" && imageCxrClassification
+            ? imageCxrClassification
+            : {
+                file_name: imageAnalysis.file_name,
+                format: imageAnalysis.format_name,
+                dimensions: `${imageAnalysis.width}×${imageAnalysis.height}`,
+              };
+        merged.current_summary =
+          activeStudioView === "cxr_classification" && imageCxrClassification
+            ? {
+                status: imageCxrClassification.status,
+                model_weights: imageCxrClassification.model_weights,
+                top_predictions: Array.isArray(imageCxrClassification.top_predictions)
+                  ? imageCxrClassification.top_predictions.slice(0, 5)
+                  : [],
+                positive_findings: Array.isArray(imageCxrClassification.positive_findings)
+                  ? imageCxrClassification.positive_findings.slice(0, 8)
+                  : [],
+              }
+            : {
+                format_name: imageAnalysis.format_name,
+                color_mode: imageAnalysis.color_mode,
+                width: imageAnalysis.width,
+                height: imageAnalysis.height,
+                bit_depth: imageAnalysis.bit_depth,
+              };
+      }
       allWarnings.push(...(Array.isArray(imageAnalysis.warnings) ? imageAnalysis.warnings.slice(0, 12) : []));
+      allWarnings.push(...(Array.isArray(imageCxrClassification?.warnings) ? imageCxrClassification.warnings.slice(0, 12) : []));
       mergedExtra.image = {
         file_name: imageAnalysis.file_name,
         format_name: imageAnalysis.format_name,
@@ -4826,6 +5131,7 @@ export default function Page() {
         bit_depth: imageAnalysis.bit_depth,
         exif_data: imageAnalysis.exif_data,
         metadata_items: imageAnalysis.metadata_items,
+        cxr_classification: imageCxrClassification,
       };
     }
 
@@ -4926,6 +5232,17 @@ export default function Page() {
     }
     node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
   }, [chatTurns.length]);
+
+  const activeSourceType = activeSource?.source_type ?? attachedSourceType;
+  const showCxrToolLauncher = activeSourceType === "image" || activeSourceType === "dicom" || activeSourceType === "text";
+  const canRunCxrImageTool = activeSource?.source_type === "image" || activeSource?.source_type === "dicom";
+  const canRunCxrReportTool = activeSource?.source_type === "text";
+  const isCxrToolBusy = status.startsWith("Running CXR");
+  const cxrRegistryItems = (toolRegistry?.length ? toolRegistry : activeToolRegistry ?? []).filter((tool: any) => {
+    const name = String(tool?.name ?? "").toLowerCase();
+    const task = String(tool?.task ?? "").toLowerCase();
+    return name.includes("cxr") || task.includes("cxr");
+  });
 
   return (
     <main className="shell notebookShell">
@@ -5050,6 +5367,83 @@ export default function Page() {
                   </div>
                   {sourceStatusDetail ? <p className="sourceHint">{sourceStatusDetail}</p> : null}
                   {error ? <p className="errorText">{error}</p> : null}
+                  {showCxrToolLauncher ? (
+                    <div className="cxrToolLauncher">
+                      <div className="cxrToolLauncherHead">
+                        <div>
+                          <span>CXR tools</span>
+                          <strong>
+                            {activeSourceType === "text" ? "Report labeling" : "Image classification"}
+                          </strong>
+                        </div>
+                        <span className="sourceBadge">{cxrRegistryItems.length || (canRunCxrImageTool ? CXR_MODEL_PRESETS.length : 1)}</span>
+                      </div>
+
+                      {activeSourceType === "image" || activeSourceType === "dicom" ? (
+                        <div className="cxrToolGroup">
+                          <div className="cxrToolGroupHeader">
+                            <span>@cxr</span>
+                            <strong>Model presets</strong>
+                          </div>
+                          <div className="cxrModelGrid">
+                            {CXR_MODEL_PRESETS.map((preset) => (
+                              <button
+                                key={preset.value}
+                                type="button"
+                                className="cxrModelButton"
+                                disabled={!canRunCxrImageTool || isCxrToolBusy}
+                                onClick={() => void runPreAnalysisTool("cxr", `model_weights=${preset.value}`)}
+                              >
+                                <strong>{preset.label}</strong>
+                                <span>{preset.detail}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {activeSourceType === "text" ? (
+                        <div className="cxrToolGroup">
+                          <div className="cxrToolGroupHeader">
+                            <span>@cxrreport</span>
+                            <strong>Report labels</strong>
+                          </div>
+                          <button
+                            type="button"
+                            className="cxrWideToolButton"
+                            disabled={!canRunCxrReportTool || isCxrToolBusy}
+                            onClick={() => void runPreAnalysisTool("cxrreport", "")}
+                          >
+                            <strong>CheXbert-style labels</strong>
+                            <span>CheXpert observations</span>
+                          </button>
+                        </div>
+                      ) : null}
+
+                      {cxrRegistryItems.length ? (
+                        <div className="toolRegistryDetails">
+                          <button
+                            type="button"
+                            className="toolRegistrySummary"
+                            onClick={() => setToolRegistryOpen((open) => !open)}
+                          >
+                            <span>Registered CXR tools</span>
+                            <span className="toolRegistryCount">{toolRegistryLoading ? "..." : cxrRegistryItems.length}</span>
+                          </button>
+                          {toolRegistryOpen ? (
+                            <div className="toolRegistryMenu">
+                              {cxrRegistryItems.map((tool: any) => (
+                                <div key={String(tool.name)} className="toolRegistryItem">
+                                  <span className="toolRegistryName">{displayToolAlias(String(tool.name ?? ""))}</span>
+                                  <span className="toolRegistryTask">{String(tool.task ?? tool.modality ?? "tool")}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               </section>
 
