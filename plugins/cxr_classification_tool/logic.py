@@ -217,18 +217,17 @@ def _load_xray_array(xrv: Any, path: Path, source_kind: str) -> Any:
 
 
 def _load_model(xrv: Any, model_weights: str, cache_dir: str | None) -> Any:
+    # Load with apply_sigmoid=False.  Models that ship with op_threshs (e.g. the
+    # -all blended models) apply sigmoid internally in their forward pass and then
+    # run op_norm calibration.  Passing apply_sigmoid=True on those models causes
+    # a double-sigmoid (sigmoid → sigmoid → op_norm) that collapses all scores to
+    # ~0.75 regardless of the input.  We apply sigmoid manually below for models
+    # that have no op_threshs.
     model_class = xrv.models.ResNet if model_weights.startswith("resnet") else xrv.models.DenseNet
     try:
-        return model_class(
-            weights=model_weights,
-            apply_sigmoid=True,
-            cache_dir=cache_dir,
-        )
+        return model_class(weights=model_weights, apply_sigmoid=False, cache_dir=cache_dir)
     except TypeError:
-        return model_class(
-            weights=model_weights,
-            apply_sigmoid=True,
-        )
+        return model_class(weights=model_weights, apply_sigmoid=False)
 
 
 def run(payload: dict[str, object]) -> dict[str, object]:
@@ -274,6 +273,10 @@ def run(payload: dict[str, object]) -> dict[str, object]:
 
         with torch.no_grad():
             output = model(image_tensor)
+            # Models without op_threshs return raw logits; apply sigmoid so the
+            # caller always receives probabilities in [0, 1].
+            if not (hasattr(model, "op_threshs") and model.op_threshs is not None):
+                output = torch.sigmoid(output)
         scores = output.detach().cpu().numpy()[0].tolist()
         labels = list(getattr(model, "pathologies", None) or getattr(model, "targets", None) or [])
         if not labels:
