@@ -42,6 +42,8 @@ const STUDIO_RENDERER_METADATA: Record<string, { requestedViews?: string[]; resu
   igv: { requestedViews: ["igv"] },
   annotations: { requestedViews: ["annotations"] },
   fhir_browser: { requestedViews: ["fhir_browser"] },
+  cxr_ensemble: { requestedViews: ["cxr_ensemble"], resultKinds: ["cxr_ensemble"] },
+  cxr_classifier: { requestedViews: ["cxr_classifier"], resultKinds: ["cxr_classification"] },
 };
 
 function findRendererKeyByRequestedView(requestedView?: string | null): string | null {

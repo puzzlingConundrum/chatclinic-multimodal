@@ -1,0 +1,64 @@
+{
+  "name": "cxr_ensemble_tool",
+  "entrypoint": "plugins.cxr_ensemble_tool.logic:execute",
+  "description": "Two-stage CXR ensemble classifier. Stage 1: TorchXRayVision DenseNet121 (primary). Stage 2 (triggered when primary confidence is insufficient): adds ResNet50 + MedCLIP and aggregates via label-aligned majority vote across three models.",
+  "task": "cxr_ensemble_classification",
+  "modality": "medical-image",
+  "approval_required": false,
+  "source": "plugin",
+  "source_types": ["dicom", "image"],
+  "direct_chat": {
+    "response_kind": "dicom_chat",
+    "result_kind": "cxr_ensemble",
+    "requested_view": "cxr_ensemble",
+    "studio": {
+      "renderer": "cxr_ensemble"
+    },
+    "source_types": ["dicom", "image"]
+  },
+  "help": {
+    "summary": "Two-stage ensemble CXR classifier. Runs TorchXRayVision DenseNet121 first; escalates to ResNet50 + MedCLIP majority vote when confidence is low.",
+    "options": [
+      {
+        "name": "densenet_weights",
+        "type": "string",
+        "default": "densenet121-res224-all",
+        "description": "TorchXRayVision weights for primary DenseNet stage."
+      },
+      {
+        "name": "resnet_weights",
+        "type": "string",
+        "default": "resnet50-res512-all",
+        "description": "TorchXRayVision weights for ResNet stage (ensemble only)."
+      },
+      {
+        "name": "low_conf_threshold",
+        "type": "float",
+        "default": 0.35,
+        "description": "Top DenseNet score below this triggers ensemble."
+      },
+      {
+        "name": "margin_threshold",
+        "type": "float",
+        "default": 0.10,
+        "description": "Top-1 minus top-2 DenseNet score below this triggers ensemble (ambiguous result)."
+      },
+      {
+        "name": "ensemble_threshold",
+        "type": "float",
+        "default": 0.35,
+        "description": "Average score threshold used for positive calls in ensemble mode."
+      }
+    ],
+    "examples": [
+      "@cxr_ensemble",
+      "@ensemble",
+      "@cxr_ensemble low_conf_threshold=0.4 margin_threshold=0.15"
+    ],
+    "notes": [
+      "Use only on chest radiographs.",
+      "Ensemble is only triggered when DenseNet confidence is low — most normal/clear CXRs complete in stage 1 only.",
+      "Output is research/screening support only and is not a final clinical diagnosis."
+    ]
+  }
+}

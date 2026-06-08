@@ -94,6 +94,80 @@ def _attach_cxr_classification_result(
     )
 
 
+def _attach_cxr_ensemble_result(
+    result: ImageSourceResponse | DicomSourceResponse,
+    *,
+    source_path: str | None,
+    payload_key: str,
+) -> ImageSourceResponse | DicomSourceResponse:
+    """
+    Run the two-stage CXR ensemble tool and attach the result.
+
+    Stage 1 (DenseNet121) runs unconditionally.  If confidence is sufficient
+    the function returns quickly.  Otherwise it escalates to a ResNet50 +
+    MedCLIP majority vote (Stage 2) and returns the combined ensemble result.
+
+    Falls back to the plain cxr_classification_tool on any ensemble failure
+    so a degraded-but-useful result is always produced.
+    """
+    if not source_path:
+        return result
+
+    warnings = list(result.warnings or [])
+    try:
+        ensemble_payload = run_tool(
+            "cxr_ensemble_tool",
+            {payload_key: source_path, "file_name": result.file_name},
+        )
+    except Exception as exc:
+        # Graceful fallback to standalone DenseNet classification
+        warnings.append(f"Ensemble tool failed ({exc}); falling back to primary classification.")
+        return _attach_cxr_classification_result(
+            result.model_copy(update={"warnings": warnings}),
+            source_path=source_path,
+            payload_key=payload_key,
+        )
+
+    ensemble_result = ensemble_payload.get("ensemble")
+    if not isinstance(ensemble_result, dict):
+        ensemble_result = ensemble_payload
+
+    for w in (ensemble_payload.get("warnings") or []):
+        wt = str(w).strip()
+        if wt and wt not in warnings:
+            warnings.append(wt)
+
+    artifacts = dict(result.artifacts or {})
+    artifacts["cxr_ensemble"] = ensemble_result
+
+    # Backfill cxr_classification for renderers that still read it
+    densenet_sub = (ensemble_result.get("model_results") or {}).get("densenet121")
+    if isinstance(densenet_sub, dict) and densenet_sub.get("available"):
+        artifacts["cxr_classification"] = densenet_sub
+
+    studio_cards = list(result.studio_cards or [])
+    if not any(str(card.get("id")) == "cxr_ensemble" for card in studio_cards if isinstance(card, dict)):
+        triggered = bool(ensemble_result.get("ensemble_triggered"))
+        top = str(ensemble_result.get("top_finding", "n/a"))
+        pct = float(ensemble_result.get("top_score", 0)) * 100
+        subtitle = (
+            f"Ensemble (DenseNet + ResNet + MedCLIP) — top: {top} ({pct:.1f}%)"
+            if triggered
+            else f"Primary DenseNet — {top} ({pct:.1f}%)"
+        )
+        studio_cards.append({"id": "cxr_ensemble", "title": "CXR Ensemble", "subtitle": subtitle})
+
+    used_tools = list(dict.fromkeys([*(result.used_tools or []), "cxr_ensemble_tool"]))
+    return result.model_copy(
+        update={
+            "artifacts": artifacts,
+            "studio_cards": studio_cards,
+            "warnings": warnings,
+            "used_tools": used_tools,
+        }
+    )
+
+
 def _attach_cxr_report_labeling_result(
     result: TextSourceResponse,
     *,
@@ -242,7 +316,7 @@ def analyze_spreadsheet_workflow(path: str, original_name: str) -> SpreadsheetSo
 
 def analyze_dicom_workflow(path: str, original_name: str) -> DicomSourceResponse:
     result = analyze_dicom_source(path, original_name)
-    result = _attach_cxr_classification_result(
+    result = _attach_cxr_ensemble_result(
         result,
         source_path=result.source_dicom_path,
         payload_key="dicom_path",
@@ -261,7 +335,7 @@ def analyze_fhir_workflow(path: str, original_name: str) -> FhirSourceResponse:
 
 def analyze_image_workflow(path: str, original_name: str) -> ImageSourceResponse:
     result = analyze_image_source(path, original_name)
-    result = _attach_cxr_classification_result(
+    result = _attach_cxr_ensemble_result(
         result,
         source_path=result.source_image_path,
         payload_key="image_path",

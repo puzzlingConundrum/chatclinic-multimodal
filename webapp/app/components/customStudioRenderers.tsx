@@ -593,6 +593,182 @@ function CxrClassificationCard({
   );
 }
 
+// ---------------------------------------------------------------------------
+// CXR Ensemble card — shows two-stage ensemble summary + per-model breakdown
+// ---------------------------------------------------------------------------
+
+function CxrEnsembleCard({
+  ensemble,
+  sourceName,
+  components,
+}: {
+  ensemble: any;
+  sourceName: string;
+  components: StudioRendererBuilderArgs["components"];
+}) {
+  const { StudioMetricGrid, WarningListCard, StudioSimpleList } = components;
+  const triggered: boolean = Boolean(ensemble?.ensemble_triggered);
+  const stage: string = String(ensemble?.confidence_stage ?? "primary");
+  const topFinding: string = String(ensemble?.top_finding ?? "n/a");
+  const topScore: number = typeof ensemble?.top_score === "number" ? ensemble.top_score : 0;
+  const modelsUsed: string[] = Array.isArray(ensemble?.models_used) ? ensemble.models_used : [];
+  const alignedFindings: any[] = Array.isArray(ensemble?.aligned_findings) ? ensemble.aligned_findings : [];
+  const positiveFindings: any[] = Array.isArray(ensemble?.positive_findings) ? ensemble.positive_findings : [];
+  const warnings: string[] = Array.isArray(ensemble?.warnings) ? ensemble.warnings : [];
+  const modelResults: Record<string, any> = ensemble?.model_results && typeof ensemble.model_results === "object" ? ensemble.model_results : {};
+  const reason: string = String(ensemble?.low_confidence_reason ?? "");
+  const maxAvg = alignedFindings.reduce((acc: number, f: any) => Math.max(acc, Number(f?.avg_score ?? 0)), 0);
+  const primaryProbs: any[] = !triggered ? ((modelResults.densenet121?.probabilities ?? []) as any[]) : [];
+  const primaryMax = primaryProbs.reduce((acc: number, p: any) => Math.max(acc, Number(p?.score ?? 0)), 0);
+
+  return (
+    <section className="notebookPanel studioCanvasPanel">
+      <div className="notebookHeader">
+        <h2>CXR Ensemble</h2>
+        <span className="pill">{triggered ? "Ensemble (3 models)" : "Primary"}</span>
+      </div>
+      <div className="studioCanvasBody">
+        <StudioMetricGrid
+          items={[
+            { label: "Stage", value: triggered ? "Ensemble" : "Primary only", tone: triggered ? "warn" : "good" },
+            { label: "Top finding", value: topFinding, tone: topFinding === "No Finding" ? "good" : "warn" },
+            { label: "Confidence", value: `${(topScore * 100).toFixed(1)}%`, tone: "neutral" },
+            { label: "Models used", value: String(modelsUsed.length), tone: "neutral" },
+            { label: "Positive findings", value: String(positiveFindings.length), tone: positiveFindings.length > 0 ? "warn" : "good" },
+            { label: "Method", value: triggered ? "Majority vote 2/3" : "DenseNet primary", tone: "neutral" },
+          ]}
+        />
+
+        {triggered && reason ? (
+          <article className="miniCard">
+            <h3>Why ensemble was triggered</h3>
+            <p className="emptyState" style={{ color: "var(--color-warn, #b45309)", fontStyle: "normal" }}>
+              {reason}
+            </p>
+          </article>
+        ) : null}
+
+        {triggered && alignedFindings.length > 0 ? (
+          <>
+            <article className="miniCard">
+              <h3>Aligned findings — majority vote</h3>
+              <p className="summaryStatsGridMeta" style={{ marginBottom: "0.5rem" }}>
+                Labels aligned across TXV DenseNet, ResNet50, and MedCLIP.
+                Positive if ≥ 2/3 models vote positive OR average score ≥ threshold.
+              </p>
+              <div className="distributionList">
+                {alignedFindings.map((finding: any) => {
+                  const avg = Number(finding?.avg_score ?? 0);
+                  const widthPct = maxAvg > 0 ? Math.max((avg / maxAvg) * 100, 3) : 0;
+                  const isPositive = Boolean(finding?.positive);
+                  const votes = `${finding?.votes_positive ?? 0}/${finding?.votes_total ?? 0}`;
+                  return (
+                    <div key={String(finding?.label ?? "finding")} className="distributionRow">
+                      <div className="distributionMeta">
+                        <span style={isPositive ? { fontWeight: 600 } : undefined}>
+                          {String(finding?.label ?? "finding")}
+                        </span>
+                        <strong>
+                          {(avg * 100).toFixed(1)}%&nbsp;
+                          <span style={{ fontSize: "0.75em", opacity: 0.7 }}>({votes} votes)</span>
+                        </strong>
+                      </div>
+                      <div className="distributionTrack">
+                        <div
+                          className="distributionFill"
+                          style={{
+                            width: `${widthPct}%`,
+                            ...(isPositive ? { backgroundColor: "var(--color-accent, #4f6ef7)" } : {}),
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </article>
+
+            <div className="resultSectionSplit">
+              <article className="miniCard">
+                <h3>DenseNet121 top-5</h3>
+                <StudioSimpleList
+                  items={(modelResults.densenet121?.top_predictions ?? []).slice(0, 5).map((p: any) => ({
+                    label: String(p?.label ?? "finding"),
+                    detail: Number(p?.score ?? 0).toFixed(3),
+                  }))}
+                  emptyLabel="DenseNet result unavailable."
+                />
+              </article>
+              <article className="miniCard">
+                <h3>ResNet50 top-5</h3>
+                <StudioSimpleList
+                  items={(modelResults.resnet50?.top_predictions ?? []).slice(0, 5).map((p: any) => ({
+                    label: String(p?.label ?? "finding"),
+                    detail: Number(p?.score ?? 0).toFixed(3),
+                  }))}
+                  emptyLabel="ResNet result unavailable."
+                />
+              </article>
+              <article className="miniCard">
+                <h3>MedCLIP top-5</h3>
+                <StudioSimpleList
+                  items={(modelResults.medclip?.all_findings ?? []).slice(0, 5).map((f: any) => ({
+                    label: String(f?.label ?? "finding"),
+                    detail: `${(Number(f?.score ?? 0) * 100).toFixed(1)}%`,
+                  }))}
+                  emptyLabel="MedCLIP result unavailable."
+                />
+              </article>
+            </div>
+          </>
+        ) : null}
+
+        {!triggered && primaryProbs.length > 0 ? (
+          <article className="miniCard">
+            <h3>DenseNet121 pathology probabilities</h3>
+            <div className="distributionList">
+              {(primaryProbs as any[])
+                .slice()
+                .sort((a: any, b: any) => Number(b?.score ?? 0) - Number(a?.score ?? 0))
+                .map((item: any, idx: number) => {
+                  const score = Number(item?.score ?? 0);
+                  const width = primaryMax > 0 ? Math.max((score / primaryMax) * 100, 3) : 0;
+                  return (
+                    <div key={`${String(item?.raw_label ?? item?.label ?? "finding")}-${idx}`} className="distributionRow">
+                      <div className="distributionMeta">
+                        <span>{String(item?.label ?? "finding")}</span>
+                        <strong>{score.toFixed(3)}</strong>
+                      </div>
+                      <div className="distributionTrack">
+                        <div className="distributionFill" style={{ width: `${width}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </article>
+        ) : null}
+
+        <article className="miniCard">
+          <h3>Provenance</h3>
+          <div className="variantTableWrap summaryStatsTableWrap">
+            <table className="variantTable summaryStatsTable">
+              <tbody>
+                <tr><th>Method</th><td>{String(ensemble?.ensemble_method ?? "primary_only")}</td></tr>
+                <tr><th>Models</th><td>{modelsUsed.join(", ") || "n/a"}</td></tr>
+                <tr><th>Source</th><td style={{ wordBreak: "break-all" }}>{sourceName || "n/a"}</td></tr>
+                <tr><th>Use</th><td>research_screening_support_only</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <WarningListCard warnings={warnings} emptyLabel="No ensemble warnings." />
+      </div>
+    </section>
+  );
+}
+
 function CxrReportLabelsCard({
   result,
   sourceName,
@@ -709,6 +885,93 @@ function CxrReportLabelsCard({
         </article>
 
         <WarningListCard warnings={warnings} emptyLabel="No CXR report labeling warnings." />
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// CXR Classifier card — renders standalone MedCLIP / BiomedCLIP results
+// (produced when @cxr_classifier is invoked directly in chat)
+// ---------------------------------------------------------------------------
+
+function CxrClassifierCard({
+  classification,
+  components,
+}: {
+  classification: any;
+  components: StudioRendererBuilderArgs["components"];
+}) {
+  const { StudioMetricGrid, WarningListCard, StudioSimpleList } = components;
+  const allFindings: any[] = Array.isArray(classification?.all_findings) ? classification.all_findings : [];
+  const notableFindings: any[] = Array.isArray(classification?.notable_findings) ? classification.notable_findings : [];
+  const warnings: string[] = Array.isArray(classification?.warnings) ? classification.warnings : [];
+  const topFinding: string = String(classification?.top_finding ?? "n/a");
+  const topScore: number = typeof classification?.top_score === "number" ? classification.top_score : 0;
+  const maxScore = allFindings.reduce((acc: number, f: any) => Math.max(acc, Number(f?.score ?? 0)), 0);
+
+  return (
+    <section className="notebookPanel studioCanvasPanel">
+      <div className="notebookHeader">
+        <h2>CXR Classifier (MedCLIP)</h2>
+        <span className="pill">{String(classification?.model_backend ?? "medclip")}</span>
+      </div>
+      <div className="studioCanvasBody">
+        <StudioMetricGrid
+          items={[
+            { label: "Top finding", value: topFinding, tone: topFinding === "No Finding" ? "good" : "warn" },
+            { label: "Top score", value: `${(topScore * 100).toFixed(1)}%`, tone: topScore > 0.4 ? "warn" : "neutral" },
+            { label: "Backend", value: String(classification?.model_backend ?? "n/a"), tone: "neutral" },
+            { label: "Device", value: String(classification?.device ?? "n/a"), tone: String(classification?.device ?? "").startsWith("cuda") ? "good" : "neutral" },
+            { label: "Notable findings", value: String(notableFindings.length), tone: notableFindings.length > 0 ? "warn" : "good" },
+            { label: "Total labels", value: String(allFindings.length), tone: "neutral" },
+          ]}
+        />
+
+        {allFindings.length > 0 ? (
+          <article className="miniCard">
+            <h3>All findings (softmax scores)</h3>
+            <div className="distributionList">
+              {allFindings
+                .slice()
+                .sort((a: any, b: any) => Number(b?.score ?? 0) - Number(a?.score ?? 0))
+                .map((item: any, idx: number) => {
+                  const score = Number(item?.score ?? 0);
+                  const width = maxScore > 0 ? Math.max((score / maxScore) * 100, 3) : 0;
+                  const isTop = String(item?.label) === topFinding;
+                  return (
+                    <div key={`${String(item?.label ?? "finding")}-${idx}`} className="distributionRow">
+                      <div className="distributionMeta">
+                        <span style={isTop ? { fontWeight: 600 } : undefined}>{String(item?.label ?? "finding")}</span>
+                        <strong>{(score * 100).toFixed(1)}%</strong>
+                      </div>
+                      <div className="distributionTrack">
+                        <div
+                          className="distributionFill"
+                          style={{ width: `${width}%`, ...(isTop ? { backgroundColor: "var(--color-accent, #4f6ef7)" } : {}) }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>
+          </article>
+        ) : null}
+
+        {notableFindings.length > 0 ? (
+          <article className="miniCard">
+            <h3>Notable findings</h3>
+            <StudioSimpleList
+              items={notableFindings.map((f: any) => ({
+                label: String(f?.label ?? "finding"),
+                detail: `${(Number(f?.score ?? 0) * 100).toFixed(1)}%`,
+              }))}
+              emptyLabel="No notable findings."
+            />
+          </article>
+        ) : null}
+
+        <WarningListCard warnings={warnings} emptyLabel="No classifier warnings." />
       </div>
     </section>
   );
@@ -1091,6 +1354,26 @@ export function buildCustomStudioRendererRegistry({
         : imageAnalysis?.file_name ?? dicomAnalysis?.file_name ?? activeSource?.file_name ?? "";
   const cxrReportLabelsResult = textAnalysis?.artifacts?.cxr_report_labels ?? null;
   const cxrReportLabelsSourceName = textAnalysis?.file_name ?? (activeSource?.source_type === "text" ? activeSource?.file_name : "") ?? "";
+  const cxrEnsembleResult =
+    activeSource?.source_type === "dicom"
+      ? dicomAnalysis?.artifacts?.cxr_ensemble ?? imageAnalysis?.artifacts?.cxr_ensemble ?? null
+      : activeSource?.source_type === "image"
+        ? imageAnalysis?.artifacts?.cxr_ensemble ?? dicomAnalysis?.artifacts?.cxr_ensemble ?? null
+        : imageAnalysis?.artifacts?.cxr_ensemble ?? dicomAnalysis?.artifacts?.cxr_ensemble ?? null;
+  const cxrEnsembleSourceName =
+    activeSource?.source_type === "dicom"
+      ? dicomAnalysis?.file_name ?? activeSource?.file_name ?? ""
+      : activeSource?.source_type === "image"
+        ? imageAnalysis?.file_name ?? activeSource?.file_name ?? ""
+        : imageAnalysis?.file_name ?? dicomAnalysis?.file_name ?? activeSource?.file_name ?? "";
+  const cxrClassifierResult = (() => {
+    const r =
+      dicomAnalysis?.artifacts?.cxr_classification ??
+      imageAnalysis?.artifacts?.cxr_classification ??
+      null;
+    // Only use this for standalone MedCLIP results (has model_backend); TXV backfill is handled by cxr_classification renderer
+    return r && typeof (r as any).model_backend === "string" ? r : null;
+  })();
 
   return {
     dicom_review: () =>
@@ -1118,6 +1401,21 @@ export function buildCustomStudioRendererRegistry({
         <CxrReportLabelsCard
           result={cxrReportLabelsResult}
           sourceName={cxrReportLabelsSourceName}
+          components={components}
+        />
+      ) : null,
+    cxr_ensemble: () =>
+      cxrEnsembleResult ? (
+        <CxrEnsembleCard
+          ensemble={cxrEnsembleResult}
+          sourceName={cxrEnsembleSourceName}
+          components={components}
+        />
+      ) : null,
+    cxr_classifier: () =>
+      cxrClassifierResult ? (
+        <CxrClassifierCard
+          classification={cxrClassifierResult}
           components={components}
         />
       ) : null,
