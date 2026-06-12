@@ -617,7 +617,8 @@ function CxrEnsembleCard({
   const warnings: string[] = Array.isArray(ensemble?.warnings) ? ensemble.warnings : [];
   const modelResults: Record<string, any> = ensemble?.model_results && typeof ensemble.model_results === "object" ? ensemble.model_results : {};
   const reason: string = String(ensemble?.low_confidence_reason ?? "");
-  const maxAvg = alignedFindings.reduce((acc: number, f: any) => Math.max(acc, Number(f?.avg_score ?? 0)), 0);
+  const explanation: string = String(ensemble?.explanation ?? "");
+  const maxScore = alignedFindings.reduce((acc: number, f: any) => Math.max(acc, Number(f?.ensemble_score ?? 0)), 0);
   const primaryProbs: any[] = !triggered ? ((modelResults.densenet121?.probabilities ?? []) as any[]) : [];
   const primaryMax = primaryProbs.reduce((acc: number, p: any) => Math.max(acc, Number(p?.score ?? 0)), 0);
 
@@ -635,7 +636,7 @@ function CxrEnsembleCard({
             { label: "Confidence", value: `${(topScore * 100).toFixed(1)}%`, tone: "neutral" },
             { label: "Models used", value: String(modelsUsed.length), tone: "neutral" },
             { label: "Positive findings", value: String(positiveFindings.length), tone: positiveFindings.length > 0 ? "warn" : "good" },
-            { label: "Method", value: triggered ? "Majority vote 2/3" : "DenseNet primary", tone: "neutral" },
+            { label: "Method", value: triggered ? "Weighted fusion" : "DenseNet primary", tone: "neutral" },
           ]}
         />
 
@@ -648,20 +649,29 @@ function CxrEnsembleCard({
           </article>
         ) : null}
 
+        {triggered && explanation ? (
+          <article className="miniCard">
+            <h3>Fusion rationale</h3>
+            <p className="emptyState" style={{ color: "var(--color-muted-strong, #374151)", fontStyle: "normal" }}>
+              {explanation}
+            </p>
+          </article>
+        ) : null}
+
         {triggered && alignedFindings.length > 0 ? (
           <>
             <article className="miniCard">
-              <h3>Aligned findings — majority vote</h3>
+              <h3>Aligned findings — weighted fusion</h3>
               <p className="summaryStatsGridMeta" style={{ marginBottom: "0.5rem" }}>
                 Labels aligned across TXV DenseNet, ResNet50, and MedCLIP.
-                Positive if ≥ 2/3 models vote positive OR average score ≥ threshold.
+                Ranked by deterministic weighted fusion across the three aligned model outputs.
               </p>
               <div className="distributionList">
                 {alignedFindings.map((finding: any) => {
-                  const avg = Number(finding?.avg_score ?? 0);
-                  const widthPct = maxAvg > 0 ? Math.max((avg / maxAvg) * 100, 3) : 0;
+                  const score = Number(finding?.ensemble_score ?? 0);
+                  const widthPct = maxScore > 0 ? Math.max((score / maxScore) * 100, 3) : 0;
                   const isPositive = Boolean(finding?.positive);
-                  const votes = `${finding?.votes_positive ?? 0}/${finding?.votes_total ?? 0}`;
+                  const support = `${finding?.supporting_models ?? 0} supporting`;
                   return (
                     <div key={String(finding?.label ?? "finding")} className="distributionRow">
                       <div className="distributionMeta">
@@ -669,8 +679,10 @@ function CxrEnsembleCard({
                           {String(finding?.label ?? "finding")}
                         </span>
                         <strong>
-                          {(avg * 100).toFixed(1)}%&nbsp;
-                          <span style={{ fontSize: "0.75em", opacity: 0.7 }}>({votes} votes)</span>
+                          {(score * 100).toFixed(1)}%&nbsp;
+                          <span style={{ fontSize: "0.75em", opacity: 0.7 }}>
+                            ({support}, {String(finding?.consensus_strength ?? "n/a")} consensus)
+                          </span>
                         </strong>
                       </div>
                       <div className="distributionTrack">
@@ -682,6 +694,11 @@ function CxrEnsembleCard({
                           }}
                         />
                       </div>
+                      {finding?.explanation ? (
+                        <p className="summaryStatsGridMeta" style={{ marginTop: "0.35rem" }}>
+                          {String(finding.explanation)}
+                        </p>
+                      ) : null}
                     </div>
                   );
                 })}

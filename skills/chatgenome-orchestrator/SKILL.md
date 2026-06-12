@@ -121,6 +121,7 @@ Later tools should include:
 - Use `ldblockshow_execution_tool` when the user explicitly asks for LD heatmap or block visualization over a region and provides or implies a concrete locus in `chr:start:end` format.
 - Use `samtools_execution_tool` when the user explicitly asks for post-alignment QC or BAM/SAM/CRAM inspection such as `flagstat`, `idxstats`, or `samtools stats`.
 - Use `cxr_classification_tool` after image or DICOM review when the source is likely a chest radiograph and the user asks for CXR classification, CXR diagnosis draft, pathology probabilities, pneumonia screening, or `@cxr`.
+- Use `cxr_ensemble_tool` after `cxr_classification_tool` when the primary CXR confidence is too low, the top findings are ambiguous, or the model needs a second/third opinion from additional CXR classifiers.
 - Do not use `cxr_classification_tool` for CT, MRI, NIfTI brain volumes, non-CXR medical images, or non-medical photographs. Treat its output as model-derived probabilities, not a final clinical diagnosis.
 - Use `cxr_report_labeling_tool` after text review when the text is likely a chest radiology report or report impression and the user asks for report labels, CheXbert/CheXpert labels, CXR report classification, or `@cxrreport`.
 - Do not use `cxr_report_labeling_tool` for arbitrary clinical notes, non-chest reports, or image-only sources. Treat its labels as report-text-derived observations, not new pixel findings.

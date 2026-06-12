@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from math import isclose
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,11 @@ MARGIN_THRESHOLD = float(os.getenv("CXR_ENSEMBLE_MARGIN_THRESHOLD", "0.10"))
 ENSEMBLE_SCORE_THRESHOLD = float(os.getenv("CXR_ENSEMBLE_SCORE_THRESHOLD", "0.35"))
 DEFAULT_DENSENET_WEIGHTS = "densenet121-res224-all"
 DEFAULT_RESNET_WEIGHTS = "resnet50-res512-all"
+ENSEMBLE_MODEL_WEIGHTS: dict[str, float] = {
+    "densenet121": 0.40,
+    "resnet50": 0.35,
+    "medclip": 0.25,
+}
 
 # ---------------------------------------------------------------------------
 # Label alignment — maps each model's raw label → shared canonical label
@@ -125,60 +131,148 @@ def _medclip_canonical_scores(medclip_result: dict[str, Any]) -> dict[str, float
 
 
 # ---------------------------------------------------------------------------
-# Majority vote aggregation
+# Deterministic score fusion
 # ---------------------------------------------------------------------------
 
-def _majority_vote(
+def _normalize_model_scores(scores: dict[str, float]) -> dict[str, float]:
+    """Normalize a model's label scores onto a comparable 0..1 simplex."""
+    if not scores:
+        return {}
+    total = sum(max(score, 0.0) for score in scores.values())
+    if isclose(total, 0.0):
+        width = float(len(scores))
+        return {label: 1.0 / width for label in scores}
+    return {label: max(score, 0.0) / total for label, score in scores.items()}
+
+
+def _consensus_strength(
+    *,
+    supporting_models: int,
+    ensemble_score: float,
+    positive_threshold: float,
+) -> str:
+    if supporting_models >= 2 and ensemble_score >= positive_threshold:
+        return "high"
+    if supporting_models >= 1 or ensemble_score >= (positive_threshold * 0.75):
+        return "mixed"
+    return "weak"
+
+
+def _fused_explanation(
+    label: str,
+    *,
+    rank: int,
+    ensemble_score: float,
+    supporting_model_names: list[str],
+    top_contributor: str | None,
+    consensus_strength: str,
+) -> str:
+    rank_clause = (
+        f"{label} ranked highest by weighted fusion ({ensemble_score:.3f})"
+        if rank == 1
+        else f"{label} ranked #{rank} by weighted fusion ({ensemble_score:.3f})"
+    )
+    if supporting_model_names:
+        support_clause = ", ".join(supporting_model_names)
+        contributor_clause = f"; strongest weighted contribution came from {top_contributor}" if top_contributor else ""
+        return (
+            f"{rank_clause}; "
+            f"supportive models: {support_clause}{contributor_clause}. Consensus: {consensus_strength}."
+        )
+    return (
+        f"{rank_clause} despite limited per-model threshold support. "
+        f"Consensus: {consensus_strength}."
+    )
+
+
+def _weighted_score_fusion(
     model_scores: dict[str, dict[str, float]],
     *,
+    model_weights: dict[str, float],
     model_thresholds: dict[str, float],
-    avg_threshold: float,
+    positive_threshold: float,
 ) -> list[dict[str, Any]]:
     """
-    Aggregate per-model label scores via majority vote + average-score check.
+    Aggregate aligned label scores via deterministic weighted fusion.
 
-    For each canonical label:
-      - votes_positive: how many models flag it above their threshold
-      - majority_vote: True if votes_positive >= ceil(votes_total / 2)
-      - avg_score_positive: True if average score across all covering models >= avg_threshold
-      - positive: True if majority_vote OR avg_score_positive
-
-    Returns list sorted by: positive desc, avg_score desc.
+    Each model contributes a normalized score distribution across the canonical
+    labels it covers. The ensemble score is the weighted sum of those
+    normalized scores, using fixed per-model weights renormalized over the
+    models that returned usable scores.
     """
     all_labels: set[str] = {lbl for scores in model_scores.values() for lbl in scores}
+    normalized_scores = {
+        model_name: _normalize_model_scores(scores)
+        for model_name, scores in model_scores.items()
+    }
+    active_model_weights = {
+        model_name: model_weights.get(model_name, 0.0)
+        for model_name, scores in normalized_scores.items()
+        if scores
+    }
+    total_active_weight = sum(active_model_weights.values()) or 1.0
+    effective_model_weights = {
+        model_name: weight / total_active_weight
+        for model_name, weight in active_model_weights.items()
+    }
 
     findings: list[dict[str, Any]] = []
     for label in sorted(all_labels):
         per_model: dict[str, float | None] = {}
-        votes_positive = 0
-        votes_total = 0
-        score_list: list[float] = []
+        per_model_normalized: dict[str, float | None] = {}
+        weighted_contributions: dict[str, float] = {}
+        supporting_model_names: list[str] = []
 
         for model_name, scores in model_scores.items():
             score = scores.get(label)
             per_model[model_name] = score
-            if score is not None:
-                votes_total += 1
-                if score >= model_thresholds.get(model_name, avg_threshold):
-                    votes_positive += 1
-                score_list.append(score)
+            normalized = normalized_scores.get(model_name, {}).get(label)
+            per_model_normalized[model_name] = normalized
+            contribution = (normalized or 0.0) * effective_model_weights.get(model_name, 0.0)
+            weighted_contributions[model_name] = round(contribution, 6)
+            if score is not None and score >= model_thresholds.get(model_name, positive_threshold):
+                supporting_model_names.append(model_name)
 
-        avg_score = sum(score_list) / len(score_list) if score_list else 0.0
-        majority = votes_positive >= max(1, (votes_total + 1) // 2)
-        avg_pos = avg_score >= avg_threshold
+        ensemble_score = sum(weighted_contributions.values())
+        supporting_models = len(supporting_model_names)
+        positive = ensemble_score >= positive_threshold
+        consensus = _consensus_strength(
+            supporting_models=supporting_models,
+            ensemble_score=ensemble_score,
+            positive_threshold=positive_threshold,
+        )
+        top_contributor = max(
+            weighted_contributions.items(),
+            key=lambda item: item[1],
+            default=(None, 0.0),
+        )[0]
 
         findings.append({
             "label": label,
-            "votes_positive": votes_positive,
-            "votes_total": votes_total,
-            "majority_vote": majority,
-            "avg_score_positive": avg_pos,
-            "positive": majority or avg_pos,
-            "avg_score": round(avg_score, 6),
+            "positive": positive,
+            "ensemble_score": round(ensemble_score, 6),
             "model_scores": per_model,
+            "normalized_model_scores": per_model_normalized,
+            "weighted_contributions": weighted_contributions,
+            "supporting_models": supporting_models,
+            "supporting_model_names": supporting_model_names,
+            "consensus_strength": consensus,
+            "_top_contributor": top_contributor,
         })
 
-    return sorted(findings, key=lambda x: (-int(x["positive"]), -x["avg_score"]))
+    ranked_findings = sorted(findings, key=lambda x: (-int(x["positive"]), -x["ensemble_score"], x["label"]))
+    for idx, finding in enumerate(ranked_findings, start=1):
+        finding["rank"] = idx
+        finding["explanation"] = _fused_explanation(
+            str(finding["label"]),
+            rank=idx,
+            ensemble_score=float(finding["ensemble_score"]),
+            supporting_model_names=list(finding.get("supporting_model_names") or []),
+            top_contributor=str(finding["_top_contributor"]) if finding.get("_top_contributor") else None,
+            consensus_strength=str(finding.get("consensus_strength") or "n/a"),
+        )
+        finding.pop("_top_contributor", None)
+    return ranked_findings
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +318,7 @@ def run_ensemble(
 
     Stage 2 — Ensemble (DenseNet + ResNet50 + MedCLIP):
         Also run ResNet50 and MedCLIP, align labels to a canonical vocabulary,
-        and aggregate via majority vote + average-score threshold.
+        and aggregate via deterministic weighted score fusion.
     """
     global LOW_CONF_THRESHOLD, MARGIN_THRESHOLD  # allow per-call overrides
     _prev_low, _prev_margin = LOW_CONF_THRESHOLD, MARGIN_THRESHOLD
@@ -309,10 +403,11 @@ def _run_ensemble_inner(
         "medclip": ensemble_threshold,  # CLIP-based, calibrated lower
     }
 
-    aligned_findings = _majority_vote(
+    aligned_findings = _weighted_score_fusion(
         model_scores,
+        model_weights=ENSEMBLE_MODEL_WEIGHTS,
         model_thresholds=model_thresholds,
-        avg_threshold=ensemble_threshold,
+        positive_threshold=ensemble_threshold,
     )
     positive_findings = [f for f in aligned_findings if f["positive"]]
     top = aligned_findings[0] if aligned_findings else {}
@@ -329,11 +424,12 @@ def _run_ensemble_inner(
         "confidence_stage": "ensemble",
         "low_confidence_reason": reason,
         "models_used": [densenet_weights, resnet_weights, "medclip"],
-        "ensemble_method": "majority_vote_2_of_3_label_aligned",
+        "ensemble_method": "weighted_score_fusion_label_aligned",
         "top_finding": str(top.get("label", "n/a")),
-        "top_score": float(top.get("avg_score", 0)),
+        "top_score": float(top.get("ensemble_score", 0)),
         "aligned_findings": aligned_findings,
         "positive_findings": positive_findings,
+        "explanation": str(top.get("explanation", "")) if top else "",
         "model_results": {
             "densenet121": densenet_result,
             "resnet50": resnet_result,
@@ -342,9 +438,10 @@ def _run_ensemble_inner(
         "warnings": ensemble_warnings,
         "provenance": {
             "clinical_use": "research_screening_support_only",
-            "ensemble_method": "majority_vote_2_of_3_label_aligned",
+            "ensemble_method": "weighted_score_fusion_label_aligned",
             "confidence_stage": "ensemble",
             "label_alignment": "TXV→canonical + MedCLIP→canonical",
+            "ensemble_model_weights": ENSEMBLE_MODEL_WEIGHTS,
             "thresholds": {
                 "low_conf": LOW_CONF_THRESHOLD,
                 "margin": MARGIN_THRESHOLD,
