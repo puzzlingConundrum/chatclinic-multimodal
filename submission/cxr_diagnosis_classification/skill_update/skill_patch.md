@@ -81,3 +81,57 @@
 
 - Use `image_review_tool` or `dicom_review_tool` first, then route to `cxr_classification_tool` only when the source is likely a chest radiograph. In grounded chat, describe the result as model-derived probability output and recommend clinician review.
 - Use `text_review_tool` first, then route to `cxr_report_labeling_tool` when the text is likely a chest radiology report. In grounded chat, describe labels as report-text-derived observations and do not claim new pixel findings.
+
+---
+
+# Skill Patch Addendum — two-stage ensemble with LLM escalation
+
+## Tools
+
+- `cxr_ensemble_tool` (two-stage orchestrator; the recommended CXR entry point)
+- `cxr_classifier_tool` (MedCLIP / BiomedCLIP zero-shot model, used inside Stage 2)
+
+## Purpose
+
+- Improve reliability over a single CXR model by adding a confidence-aware second stage.
+- **Stage 1** runs DenseNet-121 and reports raw confidence (top score + margin).
+- An **escalation controller reads those raw scores** and decides whether one model is
+  enough or whether to escalate. By default an LLM (`gpt-5-mini`) makes this decision,
+  replacing hard-coded thresholds; a deterministic threshold rule is the fallback.
+- **Stage 2** adds ResNet-50 + MedCLIP, aligns the 18/14-label vocabularies to a canonical
+  set, and fuses them via weighted score fusion.
+
+## When to use
+
+- Prefer `cxr_ensemble_tool` over the single-model `cxr_classification_tool` whenever a more
+  robust, second-opinion CXR result is wanted, or whenever the primary result may be
+  low-confidence or ambiguous.
+- Use `decision_mode=threshold` to force the legacy hard-coded rule (e.g. offline, no API
+  key, or to demonstrate the old-vs-new comparison). Use `decision_mode=llm` to force the
+  LLM router. Default `auto` uses the LLM when `OPENAI_API_KEY` is set, else the threshold.
+- Use `stage=1` to run DenseNet only (the explicit staged UI: show Stage 1, then let the
+  user trigger Stage 2). Use `stage=2` to run the decision + ensemble on demand.
+
+## When not to use
+
+- Same exclusions as `cxr_classification_tool`: not for CT/MRI/NIfTI/ultrasound/pathology or
+  non-CXR images.
+- Do not present fused output as a final clinical diagnosis.
+
+## Routing decision input
+
+- The escalation decision keys off the **Stage-1 raw confidence scores** (top finding, top
+  score, top-1-vs-top-2 margin, top-5), not the raw pixels.
+
+## Produces
+
+- `cxr_ensemble_result` / `artifacts.cxr_ensemble`
+- Studio card: `cxr_ensemble` (shows Stage, escalation decision + `decided_by`, fused
+  findings, and explicit "Run Stage 2 · LLM / Threshold" controls)
+- `decision { mode, escalate, reason, raw_confidence, llm_model, threshold_would_be }`
+
+## Runtime
+
+- No OpenAI key required for inference: `auto` falls back to the threshold rule offline.
+- CPU or CUDA; single RTX 3090 sufficient (≤4 supported). MedCLIP/BiomedCLIP weights
+  auto-download from HuggingFace on first use.

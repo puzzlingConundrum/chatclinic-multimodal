@@ -11,6 +11,8 @@ DEFAULT_WEIGHTS = "densenet121-res224-all"
 DEFAULT_THRESHOLD = 0.5
 DEFAULT_TOP_K = 5
 DEFAULT_RESOLUTION = 224
+DEFAULT_USE_SOFTMAX = True
+DEFAULT_SOFTMAX_C = 1.5  # threshold = C / num_valid_classes
 MODEL_PRESETS: dict[str, dict[str, object]] = {
     "densenet121-res224-all": {
         "architecture": "DenseNet121",
@@ -217,18 +219,17 @@ def _load_xray_array(xrv: Any, path: Path, source_kind: str) -> Any:
 
 
 def _load_model(xrv: Any, model_weights: str, cache_dir: str | None) -> Any:
+    # Load with apply_sigmoid=False.  Models that ship with op_threshs (e.g. the
+    # -all blended models) apply sigmoid internally in their forward pass and then
+    # run op_norm calibration.  Passing apply_sigmoid=True on those models causes
+    # a double-sigmoid (sigmoid → sigmoid → op_norm) that collapses all scores to
+    # ~0.75 regardless of the input.  We apply sigmoid manually below for models
+    # that have no op_threshs.
     model_class = xrv.models.ResNet if model_weights.startswith("resnet") else xrv.models.DenseNet
     try:
-        return model_class(
-            weights=model_weights,
-            apply_sigmoid=True,
-            cache_dir=cache_dir,
-        )
+        return model_class(weights=model_weights, apply_sigmoid=False, cache_dir=cache_dir)
     except TypeError:
-        return model_class(
-            weights=model_weights,
-            apply_sigmoid=True,
-        )
+        return model_class(weights=model_weights, apply_sigmoid=False)
 
 
 def run(payload: dict[str, object]) -> dict[str, object]:
@@ -238,6 +239,8 @@ def run(payload: dict[str, object]) -> dict[str, object]:
 
     requested_model_weights = str(payload.get("model_weights") or DEFAULT_WEIGHTS).strip() or DEFAULT_WEIGHTS
     threshold = _as_float(payload.get("threshold"), DEFAULT_THRESHOLD)
+    use_softmax = str(payload.get("use_softmax", DEFAULT_USE_SOFTMAX)).lower() not in ("false", "0", "no")
+    softmax_c = _as_float(payload.get("softmax_c"), DEFAULT_SOFTMAX_C)
     try:
         model_weights = _resolve_model_weights(requested_model_weights)
     except ValueError as exc:
@@ -272,26 +275,59 @@ def run(payload: dict[str, object]) -> dict[str, object]:
         model = model.to(device)
         model.eval()
 
-        with torch.no_grad():
-            output = model(image_tensor)
-        scores = output.detach().cpu().numpy()[0].tolist()
         labels = list(getattr(model, "pathologies", None) or getattr(model, "targets", None) or [])
+        valid_indices = [i for i, lbl in enumerate(labels) if str(lbl or "").strip()]
+        n_valid = len(valid_indices) or 1  # guard against empty
+
+        if use_softmax:
+            # Softmax over raw logits: represents relative probability distribution.
+            # Threshold = C / N (positive if label's share is C× above uniform).
+            # Temporarily bypass internal sigmoid/op_norm to get raw logits.
+            saved_threshs = getattr(model, "op_threshs", None)
+            if saved_threshs is not None:
+                model.op_threshs = None
+            try:
+                with torch.no_grad():
+                    raw_logits = model(image_tensor)
+            finally:
+                if saved_threshs is not None:
+                    model.op_threshs = saved_threshs
+
+            valid_logits = raw_logits[0, valid_indices]
+            softmax_probs = torch.softmax(valid_logits, dim=0).cpu().numpy()
+            score_map = {vi: float(softmax_probs[i]) for i, vi in enumerate(valid_indices)}
+            scores = [score_map.get(i) for i in range(len(labels))]
+            threshold_used = softmax_c / n_valid
+            score_method = "softmax"
+        else:
+            # Sigmoid / op_norm calibrated path.
+            with torch.no_grad():
+                output = model(image_tensor)
+                if not (hasattr(model, "op_threshs") and model.op_threshs is not None):
+                    output = torch.sigmoid(output)
+            scores = [s if str(labels[i] or "").strip() else None
+                      for i, s in enumerate(output.cpu().numpy()[0].tolist())]
+            threshold_used = threshold
+            score_method = "sigmoid_op_norm"
+
         if not labels:
-            labels = [f"class_{index}" for index in range(len(scores))]
+            labels = [f"class_{i}" for i in range(len(scores))]
 
         probabilities = []
         omitted_untrained_outputs = 0
         for index, score in enumerate(scores):
-            raw_label = str(labels[index]).strip() if index < len(labels) else f"class_{index}"
+            raw_label = str(labels[index] if index < len(labels) else "").strip()
             if not raw_label:
                 omitted_untrained_outputs += 1
+                continue
+            if score is None:
                 continue
             probabilities.append(
                 {
                     "label": raw_label.replace("_", " "),
                     "raw_label": raw_label,
                     "score": round(float(score), 6),
-                    "positive": float(score) >= threshold,
+                    "positive": float(score) >= threshold_used,
                 }
             )
         sorted_predictions = sorted(probabilities, key=lambda item: float(item["score"]), reverse=True)
@@ -304,9 +340,15 @@ def run(payload: dict[str, object]) -> dict[str, object]:
             "This model output is research/screening support only and is not a final clinical diagnosis.",
             "Use only for chest radiographs; non-CXR inputs may produce misleading probabilities.",
         ]
+        if use_softmax:
+            warnings.append(
+                "Softmax scores show relative probability across all classes (sum = 1). "
+                "Co-occurring pathologies may appear lower than their true individual probability."
+            )
         if omitted_untrained_outputs:
             warnings.append(
-                f"{omitted_untrained_outputs} raw TorchXRayVision outputs were omitted because this preset does not define trained labels for them."
+                f"{omitted_untrained_outputs} raw TorchXRayVision outputs were omitted "
+                "because this preset does not define trained labels for them."
             )
         result = {
             "available": True,
@@ -319,9 +361,12 @@ def run(payload: dict[str, object]) -> dict[str, object]:
             "model_preset": model_preset,
             "available_model_weights": sorted(MODEL_PRESETS),
             "input_resolution": resolution,
-            "threshold": threshold,
+            "score_method": score_method,
+            "softmax_c": softmax_c if use_softmax else None,
+            "num_valid_classes": n_valid,
+            "threshold": round(threshold_used, 6),
             "device": device,
-            "raw_output_count": len(scores),
+            "raw_output_count": len([s for s in scores if s is not None]),
             "omitted_untrained_output_count": omitted_untrained_outputs,
             "probabilities": probabilities,
             "top_predictions": top_predictions,
@@ -337,11 +382,15 @@ def run(payload: dict[str, object]) -> dict[str, object]:
                     "TorchXRayVision load_image/read_xray_dcm",
                     "XRayCenterCrop",
                     f"XRayResizer({resolution})",
+                    f"softmax(C={softmax_c}, threshold={round(threshold_used, 4)})" if use_softmax else "sigmoid + op_norm",
                 ],
                 "clinical_use": "research_screening_support_only",
             },
         }
         summary = (
+            f"CXR classification completed with `{model_weights}`. "
+            f"Top model finding: {top_label} ({top_score:.3f})."
+            if isinstance(top_score, float) else
             f"CXR classification completed with `{model_weights}`. "
             f"Top model finding: {top_label} ({top_score})."
         )

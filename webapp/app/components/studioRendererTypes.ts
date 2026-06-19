@@ -7,6 +7,8 @@ export type StudioRendererRegistry = Partial<Record<string, () => ReactNode>>;
 export type StudioRendererBuilderArgs = {
   apiBase: string;
   activeStudioView: string | null;
+  handleRunCxrStage2: (mode: string) => Promise<void>;
+  cxrStage2Running: string | null;
   analysis: any;
   rawQcAnalysis: any;
   summaryStatsAnalysis: any;

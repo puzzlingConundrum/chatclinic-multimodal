@@ -16,3 +16,6 @@ torch==2.5.1
 torchvision==0.20.1
 transformers==4.57.6
 vllm==0.18.1
+
+# CXR ensemble Stage-2 (MedCLIP / BiomedCLIP zero-shot via open_clip; transformers CLIP fallback)
+open_clip_torch>=2.20,<3.0

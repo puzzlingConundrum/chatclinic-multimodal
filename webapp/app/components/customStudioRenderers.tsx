@@ -601,12 +601,17 @@ function CxrEnsembleCard({
   ensemble,
   sourceName,
   components,
+  onRunStage2,
+  stage2Running,
 }: {
   ensemble: any;
   sourceName: string;
   components: StudioRendererBuilderArgs["components"];
+  onRunStage2?: (mode: string) => Promise<void>;
+  stage2Running?: string | null;
 }) {
   const { StudioMetricGrid, WarningListCard, StudioSimpleList } = components;
+  const awaiting: boolean = Boolean(ensemble?.awaiting_stage2);
   const triggered: boolean = Boolean(ensemble?.ensemble_triggered);
   const stage: string = String(ensemble?.confidence_stage ?? "primary");
   const topFinding: string = String(ensemble?.top_finding ?? "n/a");
@@ -618,6 +623,15 @@ function CxrEnsembleCard({
   const modelResults: Record<string, any> = ensemble?.model_results && typeof ensemble.model_results === "object" ? ensemble.model_results : {};
   const reason: string = String(ensemble?.low_confidence_reason ?? "");
   const explanation: string = String(ensemble?.explanation ?? "");
+  const decidedBy: string = String(ensemble?.decided_by ?? "threshold");
+  const decision: any = ensemble?.decision ?? {};
+  const decisionReason: string = String(decision?.reason ?? ensemble?.stop_reason ?? reason ?? "");
+  const decidedByLabel: string =
+    decidedBy === "llm"
+      ? `LLM router${decision?.llm_model ? ` (${decision.llm_model})` : ""}`
+      : decidedBy === "threshold_fallback"
+        ? "Threshold rule (LLM fallback)"
+        : "Threshold rule";
   const maxScore = alignedFindings.reduce((acc: number, f: any) => Math.max(acc, Number(f?.ensemble_score ?? 0)), 0);
   const primaryProbs: any[] = !triggered ? ((modelResults.densenet121?.probabilities ?? []) as any[]) : [];
   const primaryMax = primaryProbs.reduce((acc: number, p: any) => Math.max(acc, Number(p?.score ?? 0)), 0);
@@ -626,26 +640,72 @@ function CxrEnsembleCard({
     <section className="notebookPanel studioCanvasPanel">
       <div className="notebookHeader">
         <h2>CXR Ensemble</h2>
-        <span className="pill">{triggered ? "Ensemble (3 models)" : "Primary"}</span>
+        <span className="pill">{awaiting ? "Stage 1 · awaiting Stage 2" : triggered ? "Ensemble (3 models)" : "Primary"}</span>
       </div>
       <div className="studioCanvasBody">
         <StudioMetricGrid
           items={[
-            { label: "Stage", value: triggered ? "Ensemble" : "Primary only", tone: triggered ? "warn" : "good" },
+            { label: "Stage", value: awaiting ? "Stage 1 (DenseNet)" : triggered ? "Stage 2 · Ensemble" : "Stage 2 · Primary", tone: awaiting ? "neutral" : triggered ? "warn" : "good" },
             { label: "Top finding", value: topFinding, tone: topFinding === "No Finding" ? "good" : "warn" },
             { label: "Confidence", value: `${(topScore * 100).toFixed(1)}%`, tone: "neutral" },
             { label: "Models used", value: String(modelsUsed.length), tone: "neutral" },
-            { label: "Positive findings", value: String(positiveFindings.length), tone: positiveFindings.length > 0 ? "warn" : "good" },
-            { label: "Method", value: triggered ? "Weighted fusion" : "DenseNet primary", tone: "neutral" },
+            { label: "Positive findings", value: awaiting ? "—" : String(positiveFindings.length), tone: positiveFindings.length > 0 ? "warn" : "good" },
+            { label: "Method", value: awaiting ? "Awaiting Stage 2" : triggered ? "Weighted fusion" : "DenseNet primary", tone: "neutral" },
           ]}
         />
 
-        {triggered && reason ? (
-          <article className="miniCard">
-            <h3>Why ensemble was triggered</h3>
-            <p className="emptyState" style={{ color: "var(--color-warn, #b45309)", fontStyle: "normal" }}>
-              {reason}
+        {onRunStage2 ? (
+          <article className="miniCard" style={awaiting ? { borderColor: "var(--color-accent, #4f6ef7)" } : undefined}>
+            <h3>{awaiting ? "Stage 2 — choose the escalation decision" : "Re-run Stage 2 decision"}</h3>
+            <p className="summaryStatsGridMeta" style={{ marginBottom: "0.5rem" }}>
+              The controller reads the Stage-1 raw confidence scores and decides whether one model is enough
+              or whether to escalate to the 3-model ensemble (DenseNet + ResNet50 + MedCLIP).
             </p>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="sourceAddButton"
+                disabled={Boolean(stage2Running)}
+                onClick={() => onRunStage2("llm")}
+              >
+                {stage2Running === "llm" ? "Running LLM decision…" : "▶ Run Stage 2 · LLM decision"}
+              </button>
+              <button
+                type="button"
+                className="sourceAddButton"
+                disabled={Boolean(stage2Running)}
+                onClick={() => onRunStage2("threshold")}
+              >
+                {stage2Running === "threshold" ? "Running threshold rule…" : "▶ Run Stage 2 · Threshold rule"}
+              </button>
+            </div>
+            {!awaiting && decidedBy ? (
+              <p className="summaryStatsGridMeta" style={{ marginTop: "0.5rem" }}>
+                Current result decided by: <strong>{decidedByLabel}</strong>. Re-run with the other mode to compare.
+              </p>
+            ) : null}
+          </article>
+        ) : null}
+
+        {!awaiting ? (
+          <article className="miniCard">
+            <h3>
+              Escalation decision
+              <span className="pill" style={{ marginLeft: "0.5rem" }}>{decidedByLabel}</span>
+            </h3>
+            <p className="summaryStatsGridMeta" style={{ marginBottom: "0.35rem" }}>
+              {triggered
+                ? "Stage-1 was judged low-confidence/ambiguous → escalated to the 3-model ensemble."
+                : "Stage-1 was judged confident → stopped after DenseNet (single call)."}
+            </p>
+            {decisionReason ? (
+              <p
+                className="emptyState"
+                style={{ color: triggered ? "var(--color-warn, #b45309)" : "var(--color-muted-strong, #374151)", fontStyle: "normal" }}
+              >
+                {decisionReason}
+              </p>
+            ) : null}
           </article>
         ) : null}
 
@@ -1312,6 +1372,8 @@ function FhirBrowserCard({ analysis }: { analysis: any }) {
 export function buildCustomStudioRendererRegistry({
   activeStudioView,
   apiBase,
+  handleRunCxrStage2,
+  cxrStage2Running,
   analysis,
   prsPrepResultForStudio,
   plinkResultForStudio,
@@ -1427,6 +1489,8 @@ export function buildCustomStudioRendererRegistry({
           ensemble={cxrEnsembleResult}
           sourceName={cxrEnsembleSourceName}
           components={components}
+          onRunStage2={handleRunCxrStage2}
+          stage2Running={cxrStage2Running}
         />
       ) : null,
     cxr_classifier: () =>

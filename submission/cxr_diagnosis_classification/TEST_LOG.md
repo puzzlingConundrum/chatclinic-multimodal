@@ -251,3 +251,55 @@ Build note:
 Next.js emitted a workspace-root warning because both the repository root and webapp directory contain lockfiles.
 The build still completed successfully.
 ```
+
+---
+
+## Two-stage ensemble + LLM router (final implementation)
+
+Compile checks:
+
+```text
+py_compile plugins/cxr_ensemble_tool/logic.py app/services/workflows.py : passed
+frontend: next dev recompiled cleanly (no type errors) after staged-UI changes
+```
+
+Escalation routing (LLM vs threshold) on the two demo images:
+
+```text
+single_call_confident.png : DenseNet Infiltration 0.525 (margin 0.445)
+    threshold -> escalate=False (single call)
+    llm       -> escalate=False (single call)  reason: "0.525 is clearly dominant, margin 0.445"
+two_stage_ambiguous.png   : DenseNet Cardiomegaly 0.306 (margin 0.169)
+    threshold -> escalate=True  (3-model ensemble)
+    llm       -> escalate=True  (3-model ensemble)  reason: "0.306 is weak, below ~0.35"
+```
+
+Full HTTP staged flow:
+
+```text
+POST /api/v1/image/upload            -> cxr_ensemble: stage=stage1, awaiting_stage2=true, models=[densenet121]  (Stage 1 only)
+POST /api/v1/tools/cxr_ensemble/run  {stage:2, decision_mode:llm}       -> decided_by=llm,       triggered=true,  models=3
+POST /api/v1/tools/cxr_ensemble/run  {stage:2, decision_mode:threshold} -> decided_by=threshold, single-call/escalate per scores
+```
+
+Interactive UI (Playwright, real Chrome):
+
+```text
+Upload -> card shows "Stage 1 · awaiting Stage 2" + DenseNet probabilities + two buttons.
+Click "Run Stage 2 · LLM decision"   -> card flips to "Ensemble (3 models)", shows LLM escalation reason + fused findings.
+Click "Run Stage 2 · Threshold rule" -> same image re-decided; "decided by" label flips to Threshold rule.
+Confident image + LLM Stage 2        -> "stopped after DenseNet (single call)".
+```
+
+Offline / no-key behavior:
+
+```text
+With OPENAI_API_KEY unset, decision_mode=auto falls back to the threshold rule; full Stage-1/Stage-2 inference runs without any API call.
+```
+
+Environment note:
+
+```text
+Local dev env used torch 2.11+cu130 on an RTX 5090; the submitted environment.yml pins torch 2.5.1 / pytorch-cuda 12.1, which is RTX 3090-compatible.
+Stage-2 MedCLIP requires open_clip_torch (added to requirements.txt and environment.yml).
+```

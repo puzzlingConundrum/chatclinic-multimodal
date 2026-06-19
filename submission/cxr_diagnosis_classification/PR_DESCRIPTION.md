@@ -2,78 +2,78 @@
 
 ## Title
 
-Add CXR image classification and report labeling tools
+Add confidence-aware two-stage CXR ensemble (LLM-routed) + classification & report-labeling tools
 
 ## Summary
 
-This PR integrates two related chest X-ray classification tools into ChatClinic.
+This PR adds a chest X-ray diagnosis suite to ChatClinic. The headline contribution is a
+**confidence-aware two-stage ensemble** whose escalation decision is made by an **LLM that
+reads the Stage-1 raw confidence scores**, replacing hard-coded thresholds. The suite ships
+four cooperating plugins plus an explicit staged Studio UI.
 
-The new `cxr_classification_tool` uses TorchXRayVision DenseNet/ResNet pretrained presets to produce pathology probability outputs for chest radiograph images and DICOM sources. Results are attached to source analysis as `artifacts.cxr_classification`, rendered in Studio with a new `CXR Classification` card, and made available to grounded chat.
+### Tools
 
-The new `cxr_report_labeling_tool` labels chest radiology report text with CheXbert/CheXpert-compatible 14-observation labels. Results are attached as `artifacts.cxr_report_labels`, rendered in Studio with a new `CXR Report Labels` card, and made available to grounded text chat.
+- `cxr_classification_tool` — single-model TorchXRayVision DenseNet/ResNet presets (Stage 1 / `@cxr`).
+- `cxr_classifier_tool` — MedCLIP / BiomedCLIP zero-shot model (used inside Stage 2).
+- `cxr_ensemble_tool` — **two-stage orchestrator**: DenseNet-121 → escalation decision → (if escalated) ResNet-50 + MedCLIP with label-aligned weighted score fusion.
+- `cxr_report_labeling_tool` — CheXbert/CheXpert-compatible labeling of CXR report text.
+
+### Two-stage routing (the core idea)
+
+1. **Stage 1** runs DenseNet-121 and reports raw confidence (top finding, top score, top-1−top-2 margin).
+2. An **escalation controller** decides whether to escalate. `decision_mode=auto` uses an
+   **LLM** (`gpt-5-mini`) by default; `threshold` forces the legacy rule; both are kept so
+   the old-vs-new behavior can be compared. The LLM keys off the **raw confidence scores**, not the pixels.
+3. **Stage 2** (only when escalated) adds ResNet-50 + MedCLIP, aligns the 18/14-label
+   vocabularies to a canonical set, and fuses via weighted score fusion (0.40 / 0.35 / 0.25).
+
+### Explicit staged UI
+
+Upload now runs **Stage 1 only**; the Studio card shows the DenseNet result and two buttons —
+**Run Stage 2 · LLM decision** and **Run Stage 2 · Threshold rule** — so the user triggers
+Stage 2 on demand and can re-run with the other decision mode to compare.
 
 ## Main Changes
 
-- Added `plugins/cxr_classification_tool`
-  - `tool.json`
-  - `logic.py`
-  - `README.md`
-  - `requirements.txt`
-- Added `plugins/cxr_report_labeling_tool`
-  - `tool.json`
-  - `logic.py`
-  - `README.md`
-- Updated image and DICOM workflows to run CXR classification after source review
-- Updated text workflow to attach CXR report labels when text looks like a chest radiology report
-- Added CXR classification artifact support to grounded image/DICOM chat context
-- Added CXR report label artifact support to grounded text chat context
-- Added frontend Studio renderer for CXR pathology probabilities
-- Added frontend Studio renderer for CXR report labels
-- Added direct `@cxr` execution for active image/DICOM sources
-- Added homepage/Sources-panel CXR launcher with multiple TorchXRayVision model preset buttons
-- Added direct `@cxrreport`, `@chexbert`, and `@chexpert` execution for active text sources
-- Updated master Skill routing guidance
-- Added example PNG, demo DICOM, and sample CXR report files for testing
-- Added submission documents, references, and slide draft
-- Added TorchXRayVision-related dependencies to `requirements.txt` and `environment.yml`
+- New plugins: `plugins/cxr_ensemble_tool/`, `plugins/cxr_classifier_tool/` (+ existing
+  `cxr_classification_tool`, `cxr_report_labeling_tool`).
+- `plugins/cxr_ensemble_tool/logic.py`: `_decide_escalation` / `_llm_escalation_decision`
+  (LLM router over raw scores), `run_stage1`, threshold fallback, `decision_mode` + `stage` params.
+- `app/services/workflows.py`: image/DICOM upload runs **Stage 1 only**; Stage 2 runs via the
+  tool endpoint.
+- Frontend (`webapp/app/...`): CXR Ensemble Studio card with staged states + "Run Stage 2"
+  buttons; `handleRunCxrStage2` wired through `page.tsx` and the renderer registry; card shows
+  the escalation decision and `decided_by`.
+- `skills/chatgenome-orchestrator/SKILL.md`: routing note for the LLM-routed ensemble.
+- `requirements.txt` / `environment.yml`: added `open_clip_torch` (Stage-2 MedCLIP/BiomedCLIP).
+- Examples: `examples/cxr/demo_cases/` (one confident → single-call image, one ambiguous →
+  two-stage image, plus reference CXRs) and `examples/cxr/compare_decision_modes.py`.
 
 ## Safety / Clinical Framing
 
-- The tool output is model-derived probability output, not a final clinical diagnosis.
-- The tool should only be used for chest radiographs.
-- The report labeler output is report-text-derived observation labeling, not new image findings.
-- The report labeler should only be used for chest radiology reports/impressions.
-- Non-CXR images, CT, MRI, NIfTI, ultrasound, pathology images, and non-medical photos are out of scope.
-- Grounded chat should describe probabilities and warnings without inventing pixel findings.
+- All outputs are model-derived screening/research support, not a final clinical diagnosis.
+- CXR-only; CT/MRI/NIfTI/ultrasound/pathology/non-medical images are out of scope.
+- Grounded chat describes probabilities/decisions and must not invent pixel findings.
 
 ## Runtime
 
-- CPU supported
-- CUDA supported when available
-- Tested locally in conda env `med`
-- Default checkpoint cache path:
-
-```text
-checkpoints/torchxrayvision/
-```
+- Base env: `environment.yml`. Stage-2 adds `open_clip_torch` + `transformers`.
+- **No OpenAI key required for inference:** `decision_mode=auto` falls back to the
+  deterministic threshold rule, so the full pipeline runs offline.
+- CPU or CUDA; verified on a single GPU and designed to run on **up to 4× RTX 3090**.
+- Checkpoints: TorchXRayVision DenseNet/ResNet weights in `checkpoints/torchxrayvision/`
+  (~226 MB total). MedCLIP/BiomedCLIP weights auto-download from HuggingFace at first use.
 
 ## Verification
 
-- Python compile check passed
-- TorchXRayVision dependency import passed
-- Direct plugin test passed for PNG
-- Direct plugin test passed for alternate CheXpert CXR model preset
-- Direct plugin test passed for demo DICOM
-- Direct report-labeling plugin test passed for sample CXR report text
-- Image workflow attaches CXR classification artifact
-- DICOM workflow attaches CXR classification artifact
-- Text workflow attaches CXR report label artifact
-- Running backend `/api/v1/tools/cxr/run` returns `status: ok`
-- Running image upload endpoint returns both `image_review_tool` and `cxr_classification_tool`
-- Frontend `npm run build` passed
-- Homepage/Sources-panel launcher supports image/DICOM preset selection and report-labeling execution
+See `TEST_LOG.md`. Highlights:
+- `py_compile` passes for the plugins and `app/services/*.py`; frontend compiles cleanly.
+- Stage-1-only upload returns `stage=stage1`, `awaiting_stage2=true`, 1 model.
+- Stage-2 via `POST /api/v1/tools/cxr_ensemble/run` returns the full ensemble; `decision_mode`
+  `llm` and `threshold` both verified (escalate and single-call paths).
+- LLM router routes the two demo images correctly (confident → single call; ambiguous → 3-model ensemble).
 
 ## Known Follow-ups
 
-- Upload a real external CXR DICOM if a licensed sample is provided by the instructor/team
-- Optionally export `slides/cxr_diagnosis_classification_presentation.md` to PDF for final submission
+- Export slides to PDF and attach the demo videos for the final submission.
+- Quantitative AUC benchmark on a held-out CXR test set; calibrate fusion weights/thresholds.

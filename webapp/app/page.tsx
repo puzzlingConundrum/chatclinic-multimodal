@@ -1327,6 +1327,7 @@ export default function Page() {
     return null;
   }, [attachedSourceType]);
   const [pendingUploadRole, setPendingUploadRole] = useState<"default" | "prs_summary" | "prs_target">("default");
+  const [cxrStage2Running, setCxrStage2Running] = useState<string | null>(null);
   const [prsSummaryFile, setPrsSummaryFile] = useState<File | null>(null);
   const [prsTargetFile, setPrsTargetFile] = useState<File | null>(null);
   const [prsSummarySource, setPrsSummarySource] = useState<SourceReadyResponse | null>(null);
@@ -4664,8 +4665,72 @@ export default function Page() {
 
     return cards;
   })();
+
+  async function handleRunCxrStage2(mode: string) {
+    // Pick the active CXR source (image or DICOM) that holds the ensemble artifact.
+    const isDicom =
+      Boolean(dicomAnalysis?.artifacts?.cxr_ensemble) && !imageAnalysis?.artifacts?.cxr_ensemble
+        ? true
+        : activeSource?.source_type === "dicom" || (!imageAnalysis && Boolean(dicomAnalysis));
+    const sourcePath = isDicom ? dicomAnalysis?.source_dicom_path : imageAnalysis?.source_image_path;
+    const fileName = isDicom ? dicomAnalysis?.file_name : imageAnalysis?.file_name;
+    if (!sourcePath) {
+      addMessage({ role: "assistant", content: "Active CXR source path가 없습니다. 이미지 또는 DICOM 파일을 다시 업로드해 주세요." });
+      return;
+    }
+    setCxrStage2Running(mode);
+    try {
+      const response = await fetch(`${apiBase.replace(/\/$/, "")}/api/v1/tools/cxr_ensemble/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload: {
+            [isDicom ? "dicom_path" : "image_path"]: sourcePath,
+            file_name: fileName,
+            stage: "2",
+            decision_mode: mode,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const toolResult = (await response.json()) as ToolRunResponse;
+      const ensemble =
+        (toolResult.result?.ensemble as Record<string, any> | undefined) ??
+        (toolResult.result?.artifacts as Record<string, any> | undefined)?.cxr_ensemble ??
+        (toolResult.result as Record<string, any> | undefined);
+      const ensWarnings = Array.isArray((ensemble as any)?.warnings) ? (ensemble as any).warnings.map(String) : [];
+      const applyUpdate = (current: any) =>
+        current
+          ? {
+              ...current,
+              artifacts: { ...(current.artifacts ?? {}), cxr_ensemble: ensemble },
+              warnings: [...new Set([...(current.warnings ?? []), ...ensWarnings])],
+              used_tools: [...new Set([...(current.used_tools ?? []), "cxr_ensemble_tool"])],
+            }
+          : current;
+      if (isDicom) setDicomAnalysis(applyUpdate);
+      else setImageAnalysis(applyUpdate);
+      const triggered = Boolean((ensemble as any)?.ensemble_triggered);
+      const decidedBy = String((ensemble as any)?.decided_by ?? mode);
+      const reason = String((ensemble as any)?.decision?.reason ?? "");
+      addMessage({
+        role: "assistant",
+        content:
+          `Stage 2 run for \`${fileName}\` using the **${decidedBy === "llm" ? "LLM" : "threshold"}** decision.\n\n` +
+          `- Decision: ${triggered ? "escalate → 3-model ensemble" : "do not escalate → single DenseNet call"}\n` +
+          (reason ? `- Reason: ${reason}` : ""),
+      });
+    } catch (error: any) {
+      addMessage({ role: "assistant", content: `Stage 2 failed: ${String(error?.message ?? error)}` });
+    } finally {
+      setCxrStage2Running(null);
+    }
+  }
+
   const externalStudioRendererRegistry = buildStudioRendererRegistry({
     apiBase,
+    handleRunCxrStage2,
+    cxrStage2Running,
     activeStudioView,
     analysis,
     rawQcAnalysis,

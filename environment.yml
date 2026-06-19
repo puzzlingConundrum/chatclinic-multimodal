@@ -23,3 +23,5 @@ dependencies:
       - torchxrayvision>=1.4,<2.0
       - scikit-image>=0.23,<1.0
       - pydicom>=2.4,<4.0
+      # CXR ensemble Stage-2 (MedCLIP / BiomedCLIP zero-shot; transformers CLIP fallback)
+      - open_clip_torch>=2.20,<3.0

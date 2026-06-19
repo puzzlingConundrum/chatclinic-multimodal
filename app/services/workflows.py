@@ -115,9 +115,11 @@ def _attach_cxr_ensemble_result(
 
     warnings = list(result.warnings or [])
     try:
+        # On upload we run ONLY Stage 1 (DenseNet). The user then triggers Stage 2
+        # explicitly from the Studio card, choosing an LLM or threshold decision.
         ensemble_payload = run_tool(
             "cxr_ensemble_tool",
-            {payload_key: source_path, "file_name": result.file_name},
+            {payload_key: source_path, "file_name": result.file_name, "stage": "1"},
         )
     except Exception as exc:
         # Graceful fallback to standalone DenseNet classification
@@ -148,13 +150,15 @@ def _attach_cxr_ensemble_result(
     studio_cards = list(result.studio_cards or [])
     if not any(str(card.get("id")) == "cxr_ensemble" for card in studio_cards if isinstance(card, dict)):
         triggered = bool(ensemble_result.get("ensemble_triggered"))
+        awaiting = bool(ensemble_result.get("awaiting_stage2"))
         top = str(ensemble_result.get("top_finding", "n/a"))
         pct = float(ensemble_result.get("top_score", 0)) * 100
-        subtitle = (
-            f"Ensemble (DenseNet + ResNet + MedCLIP) — top: {top} ({pct:.1f}%)"
-            if triggered
-            else f"Primary DenseNet — {top} ({pct:.1f}%)"
-        )
+        if awaiting:
+            subtitle = f"Stage 1 — {top} ({pct:.1f}%) · run Stage 2"
+        elif triggered:
+            subtitle = f"Ensemble (DenseNet + ResNet + MedCLIP) — top: {top} ({pct:.1f}%)"
+        else:
+            subtitle = f"Primary DenseNet — {top} ({pct:.1f}%)"
         studio_cards.append({"id": "cxr_ensemble", "title": "CXR Ensemble", "subtitle": subtitle})
 
     used_tools = list(dict.fromkeys([*(result.used_tools or []), "cxr_ensemble_tool"]))

@@ -4,59 +4,78 @@
 
 - Project name: `cxr_diagnosis_classification`
 - Topic category: Classification
-- Tool name: `cxr_classification_tool`
-- Additional tool name: `cxr_report_labeling_tool`
+- Primary tool: `cxr_ensemble_tool` (two-stage, LLM-routed ensemble — the headline tool)
+- Supporting tools: `cxr_classification_tool` (DenseNet/ResNet), `cxr_classifier_tool` (MedCLIP/BiomedCLIP), `cxr_report_labeling_tool` (report text)
 - Modality: medical image
 - Additional modality: clinical text
 - Supported source types: PNG/JPG/TIFF-style raster image, DICOM, text/markdown report
-- Main open-source model/library: TorchXRayVision, CheXbert/CheXpert labeler references
-- Default model weights: `densenet121-res224-all`
+- Main open-source model/library: TorchXRayVision (DenseNet-121, ResNet-50), BiomedCLIP/CLIP via open_clip, CheXbert/CheXpert labeler references
+- Escalation decision: LLM (`gpt-5-mini`) over raw Stage-1 confidence scores, with a deterministic threshold-rule fallback (`decision_mode` = auto | llm | threshold)
+- Default model weights: `densenet121-res224-all` (Stage 1), `resnet50-res512-all` (Stage 2)
 - Supported image model presets: `densenet121-res224-all`, `densenet121-res224-chex`, `densenet121-res224-nih`, `densenet121-res224-pc`, `densenet121-res224-rsna`, `densenet121-res224-mimic_nb`, `densenet121-res224-mimic_ch`, `resnet50-res512-all`
 - Runtime: CPU or CUDA GPU, with CPU fallback
 - Approval required: no for single-image inference
 
 ## Summary
 
-This submission adds two related chest X-ray classification tools to ChatClinic.
+This submission adds a chest X-ray diagnosis suite to ChatClinic. The headline tool is a
+**confidence-aware two-stage ensemble** whose escalation decision is made by an **LLM that
+reads the Stage-1 raw confidence scores** (replacing hard-coded thresholds).
 
-The first tool runs open-source TorchXRayVision DenseNet/ResNet classifier presets on a chest radiograph and returns model-derived pathology probabilities. The result is attached to ChatClinic as `artifacts.cxr_classification`, displayed in Studio as a `CXR Classification` card, and made available to grounded `$studio` chat.
+- **Stage 1** runs TorchXRayVision DenseNet-121 and reports raw confidence (top finding, top
+  score, top-1−top-2 margin).
+- An **escalation controller** decides whether one model suffices or whether to escalate.
+  `decision_mode=auto` uses an LLM (`gpt-5-mini`) by default; `threshold` forces the legacy
+  rule; both are retained for an old-vs-new comparison.
+- **Stage 2** (only when escalated) adds ResNet-50 + a MedCLIP/BiomedCLIP zero-shot model,
+  aligns the 18/14-label vocabularies to a canonical set, and fuses them via weighted score
+  fusion (0.40 / 0.35 / 0.25).
 
-The second tool labels chest radiology report text using CheXbert/CheXpert-compatible observation labels. The result is attached as `artifacts.cxr_report_labels`, displayed as a `CXR Report Labels` card, and made available to grounded text chat.
+The Studio UI is **explicitly staged**: upload runs Stage 1 only and shows the DenseNet
+result with **"Run Stage 2 · LLM decision"** and **"Run Stage 2 · Threshold rule"** buttons,
+so the user triggers Stage 2 on demand and can compare the two decision modes on the same image.
 
-The output is research/screening support only and must not be presented as a final clinical diagnosis.
+Supporting tools: `cxr_classification_tool` (single-model presets / `@cxr`),
+`cxr_classifier_tool` (MedCLIP/BiomedCLIP, used inside Stage 2), and `cxr_report_labeling_tool`
+(CheXbert/CheXpert labeling of CXR report text).
+
+All outputs are research/screening support only and must not be presented as a final clinical
+diagnosis.
 
 ## Submitted Files
 
 ```text
 cxr_diagnosis_classification/
-  plugin/
-    tool.json
-    logic.py
-    README.md
-    requirements.txt
-  plugin_cxr_report_labeling/
-    tool.json
-    logic.py
-    README.md
+  plugin/                       # cxr_classification_tool (DenseNet/ResNet, Stage 1)
+    tool.json  logic.py  README.md  requirements.txt
+  plugin_cxr_ensemble/          # cxr_ensemble_tool (two-stage orchestrator + LLM router)  ← primary
+    tool.json  logic.py  README.md  requirements.txt
+  plugin_cxr_classifier/        # cxr_classifier_tool (MedCLIP / BiomedCLIP, Stage 2)
+    tool.json  logic.py  README.md  requirements.txt
+  plugin_cxr_report_labeling/   # cxr_report_labeling_tool (report text)
+    tool.json  logic.py  README.md
   skill_update/
-    skill_patch.md
-    skill_rationale.md
+    skill_patch.md  skill_rationale.md
   references/
     background_papers.md
   slides/
     cxr_diagnosis_classification_presentation.md
+    CXR_Ensemble_Presentation.pptx          # final deck
+  demo_videos/
+    README.md                                # pointer: videos submitted via the assignment system
   examples/
     cxr/
-      README.md
-      make_demo_dicom.py
-      torchxrayvision_00000001_000.png
-      torchxrayvision_00000001_000_demo.dcm
-      sample_cxr_report.txt
+      README.md  make_demo_dicom.py  sample_cxr_report.txt
+      torchxrayvision_00000001_000.png  torchxrayvision_00000001_000_demo.dcm
+      demo_cases/                            # single_call_confident.png, two_stage_ambiguous.png, +refs
   checkpoints/
     README.md
   PR_DESCRIPTION.md
   TEST_LOG.md
 ```
+
+Note: the checkpoints themselves are submitted via the assignment system (see
+`checkpoints/README.md`); the platform path is `chatclinic-multimodal/checkpoints/torchxrayvision/`.
 
 ## ChatClinic Integration
 

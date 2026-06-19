@@ -1,0 +1,27 @@
+{
+  "name": "cxr_classifier_tool",
+  "entrypoint": "plugins.cxr_classifier_tool.logic:execute",
+  "description": "Zero-shot CXR (chest X-ray) pathology classification using MedCLIP. Classifies images across 14 CheXpert findings using vision-language contrastive embeddings. Supports DICOM and standard image inputs.",
+  "task": "cxr_classification",
+  "modality": "medical-image",
+  "source": "plugin",
+  "source_types": ["dicom", "image"],
+  "help": {
+    "summary": "Run zero-shot CXR pathology classification using MedCLIP.",
+    "usage": "@cxr_classifier",
+    "examples": [
+      "@cxr_classifier",
+      "@cxr"
+    ],
+    "notes": "Uses BiomedCLIP (open_clip) when available, falls back to CLIP (transformers). Classifies 14 CheXpert labels: No Finding, Cardiomegaly, Edema, Pneumonia, Atelectasis, Pneumothorax, Pleural Effusion, and more."
+  },
+  "direct_chat": {
+    "response_kind": "dicom_chat",
+    "result_kind": "cxr_classification",
+    "requested_view": "cxr_classifier",
+    "studio": {
+      "renderer": "cxr_classifier"
+    },
+    "source_types": ["dicom", "image"]
+  }
+}
