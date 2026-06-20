@@ -67,7 +67,7 @@ cxr_diagnosis_classification/
     cxr/
       README.md  make_demo_dicom.py  sample_cxr_report.txt
       torchxrayvision_00000001_000.png  torchxrayvision_00000001_000_demo.dcm
-      demo_cases/                            # single_call_confident.png, two_stage_ambiguous.png, +refs
+      demo_cases/                            # single_call_confident.png, two_stage_ambiguous.png (clean CXRs)
   checkpoints/
     README.md
   PR_DESCRIPTION.md

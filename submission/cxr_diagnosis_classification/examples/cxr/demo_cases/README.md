@@ -26,9 +26,11 @@ run_ensemble("examples/cxr/demo_cases/two_stage_ambiguous.png",   "image", decis
 Downloaded from Wikimedia Commons for non-commercial academic demonstration. Verify each
 file's license/attribution on its Commons page before any redistribution.
 
-- `single_call_confident.png` — Commons "Chest Xray PA 3-8-2010.png"
+- `single_call_confident.png` — Commons "Chest Xray PA 3-8-2010.png" (clean human PA chest radiograph)
 - `two_stage_ambiguous.png` — TorchXRayVision test image `00000001_000.png` (Apache-2.0, mlmed/torchxrayvision)
-- extra reference films also present: `Lung_cancer.jpg`, `Pleural_effusion.jpg`, `Pneumonia_x-ray.jpg`, `Tuberculosis-x-ray-1.jpg` (Wikimedia Commons)
+
+Only these two clean human chest radiographs are kept; earlier non-CXR reference images
+(pathology specimens, a CT slice, an anatomical diagram, an animal X-ray) were removed.
 
 These files are for software testing/demonstration only. Model outputs are screening/research
 support, not clinical diagnoses.
